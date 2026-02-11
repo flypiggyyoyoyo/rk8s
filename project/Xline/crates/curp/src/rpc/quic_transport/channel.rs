@@ -9,10 +9,11 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    task::Poll,
     time::Duration,
 };
 
-use futures::Stream;
+use futures::{Stream, future::BoxFuture};
 use gm_quic::prelude::{Connection, QuicClient, StreamReader, StreamWriter};
 use prost::Message;
 use tokio::io::AsyncWriteExt;
@@ -91,10 +92,35 @@ impl QuicChannel {
 
         // Connect each time (gm-quic handles connection reuse internally)
         let addr_str = addr.strip_prefix("quic://").unwrap_or(&addr);
-        self.client
-            .connect(addr_str)
-            .await
-            .map_err(|e| CurpError::internal(format!("QUIC connect error: {e}")))
+
+        // Try connect() first (does DNS resolution + connect).
+        // If DNS fails, fall back to connected_to() with localhost resolution.
+        // This supports both production (real DNS) and testing (fake hostnames).
+        match self.client.connect(addr_str).await {
+            Ok(conn) => Ok(conn),
+            Err(e) => {
+                // Parse server_name and port for fallback
+                let (server_name, port_str) = addr_str.rsplit_once(':').ok_or_else(|| {
+                    CurpError::internal(format!("invalid address format: {addr_str}"))
+                })?;
+                let port: u16 = port_str.parse().map_err(|_| {
+                    CurpError::internal(format!("invalid port in address: {addr_str}"))
+                })?;
+
+                // Try resolving to localhost (127.0.0.1) as fallback
+                let fallback_addr =
+                    std::net::SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), port);
+                tracing::warn!(
+                    "DNS lookup failed for {server_name}:{port} ({e}), \
+                     falling back to {fallback_addr} with SNI {server_name}"
+                );
+                self.client
+                    .connected_to(server_name, [fallback_addr])
+                    .map_err(|e2| {
+                        CurpError::internal(format!("QUIC connect error: {e2} (DNS: {e})"))
+                    })
+            }
+        }
     }
 
     /// Open a bidirectional stream on the connection
@@ -217,7 +243,7 @@ impl QuicChannel {
 
         // Return stream that reads responses
         let reader = FrameReader::new_server_streaming(recv_stream);
-        Ok(Box::pin(ServerStreamingResponse::<_, Resp>::new(reader)))
+        Ok(Box::pin(ServerStreamingResponse::<Resp>::new(reader, conn)))
     }
 
     /// Perform a client-streaming RPC call
@@ -229,7 +255,7 @@ impl QuicChannel {
         timeout: Duration,
     ) -> Result<Resp, CurpError>
     where
-        Req: Message,
+        Req: Message + 'static,
         Resp: Message + Default,
     {
         use futures::StreamExt;
@@ -245,29 +271,32 @@ impl QuicChannel {
             // Write request header
             writer.write_request_header(path, &meta).await?;
 
-            // Write all request messages
-            let mut stream = stream;
-            while let Some(req) = stream.next().await {
-                let req_bytes = req.encode_to_vec();
-                writer.write_frame(&Frame::Data(req_bytes)).await?;
-            }
-            writer.write_frame(&Frame::End).await?;
+            // Spawn a task to write all request messages concurrently.
+            // The server may respond before the client finishes sending
+            // (e.g., lease_keep_alive returns a client_id after the first message).
+            let send_handle = tokio::spawn(async move {
+                let mut stream = stream;
+                while let Some(req) = stream.next().await {
+                    let req_bytes = req.encode_to_vec();
+                    if writer.write_frame(&Frame::Data(req_bytes)).await.is_err() {
+                        break;
+                    }
+                }
+                let _ = writer.write_frame(&Frame::End).await;
+                let mut send_stream: StreamWriter = writer.into_inner();
+                let _ = send_stream.shutdown().await;
+            });
 
-            // Shutdown write side
-            let mut send_stream: StreamWriter = writer.into_inner();
-            send_stream
-                .shutdown()
-                .await
-                .map_err(|e| CurpError::internal(format!("shutdown stream error: {e}")))?;
-
-            // Read response
+            // Read response (may arrive before sending completes)
             let frame = reader.read_frame().await?;
             let resp_bytes = match frame {
                 Frame::Data(data) => data,
                 Frame::Status { code, details } if code == status_error() => {
+                    send_handle.abort();
                     return Err(Self::decode_error(&details)?);
                 }
                 _ => {
+                    send_handle.abort();
                     return Err(CurpError::internal(
                         "unexpected frame in client-streaming response",
                     ));
@@ -276,6 +305,7 @@ impl QuicChannel {
 
             // Read status
             let status_frame = reader.read_frame().await?;
+            send_handle.abort(); // Cancel sending once we have the full response
             match status_frame {
                 Frame::Status { code, details } => {
                     if code != status_ok() {
@@ -320,83 +350,113 @@ impl QuicChannel {
 }
 
 /// Server-streaming response wrapper
-struct ServerStreamingResponse<R, Resp>
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
-    /// Frame reader
-    reader: FrameReader<R>,
+///
+/// Stores the in-flight `read_frame()` future across polls so that progress
+/// is not lost when `poll_next` returns `Pending`.
+///
+/// The future takes ownership of the `FrameReader` and returns it alongside
+/// the result, so we can store it back for the next read.
+///
+/// Also holds the QUIC `Connection` to keep it alive for the duration of the
+/// stream. gm-quic's `Connection` closes on drop, so we must prevent that.
+struct ServerStreamingResponse<Resp> {
+    /// State: either we hold the reader (idle) or a future (reading)
+    state: StreamResponseState,
     /// Whether stream has ended
     ended: bool,
+    /// Keep the QUIC connection alive while the stream is being consumed
+    _conn: Connection,
     /// Phantom for response type
     _phantom: std::marker::PhantomData<Resp>,
 }
 
-impl<R, Resp> ServerStreamingResponse<R, Resp>
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
+/// Internal state for `ServerStreamingResponse`
+enum StreamResponseState {
+    /// Idle — reader is available for the next read
+    Idle(FrameReader<StreamReader>),
+    /// Reading — a `read_frame` future is in flight
+    Reading(BoxFuture<'static, (Result<Frame, CurpError>, FrameReader<StreamReader>)>),
+    /// Poisoned — state was taken and not restored (should not happen)
+    Poisoned,
+}
+
+impl<Resp> ServerStreamingResponse<Resp> {
     /// Create a new server-streaming response
-    fn new(reader: FrameReader<R>) -> Self {
+    fn new(reader: FrameReader<StreamReader>, conn: Connection) -> Self {
         Self {
-            reader,
+            state: StreamResponseState::Idle(reader),
             ended: false,
+            _conn: conn,
             _phantom: std::marker::PhantomData,
         }
     }
 }
 
-impl<R, Resp> Stream for ServerStreamingResponse<R, Resp>
+impl<Resp> Stream for ServerStreamingResponse<Resp>
 where
-    R: tokio::io::AsyncRead + Unpin + Send,
-    Resp: Message + Default + Unpin,
+    Resp: Message + Default + Unpin + Send + 'static,
 {
     type Item = Result<Resp, CurpError>;
 
     fn poll_next(
         self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        use std::task::Poll;
-
+    ) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
 
         if this.ended {
             return Poll::Ready(None);
         }
 
-        // We need to poll the async read_frame
-        let fut = this.reader.read_frame();
-        tokio::pin!(fut);
+        // If idle, start a new read
+        if matches!(this.state, StreamResponseState::Idle(_)) {
+            let state = std::mem::replace(&mut this.state, StreamResponseState::Poisoned);
+            if let StreamResponseState::Idle(mut reader) = state {
+                this.state = StreamResponseState::Reading(Box::pin(async move {
+                    let result = reader.read_frame().await;
+                    (result, reader)
+                }));
+            }
+        }
 
-        match fut.poll(cx) {
-            Poll::Ready(Ok(frame)) => match frame {
-                Frame::Data(data) => {
-                    let resp = Resp::decode(data.as_slice())
-                        .map_err(|e| CurpError::internal(format!("decode error: {e}")));
-                    Poll::Ready(Some(resp))
-                }
-                Frame::Status { code, details } => {
-                    this.ended = true;
-                    if code == status_ok() {
-                        Poll::Ready(None)
-                    } else {
-                        Poll::Ready(Some(Err(QuicChannel::decode_error(&details)
-                            .unwrap_or_else(|e| e))))
+        // Poll the in-flight future
+        if let StreamResponseState::Reading(ref mut fut) = this.state {
+            match fut.as_mut().poll(cx) {
+                Poll::Ready((result, reader)) => {
+                    this.state = StreamResponseState::Idle(reader);
+                    match result {
+                        Ok(Frame::Data(data)) => {
+                            let resp = Resp::decode(data.as_slice())
+                                .map_err(|e| CurpError::internal(format!("decode error: {e}")));
+                            Poll::Ready(Some(resp))
+                        }
+                        Ok(Frame::Status { code, details }) => {
+                            this.ended = true;
+                            if code == status_ok() {
+                                Poll::Ready(None)
+                            } else {
+                                Poll::Ready(Some(Err(QuicChannel::decode_error(&details)
+                                    .unwrap_or_else(|e| e))))
+                            }
+                        }
+                        Ok(Frame::End) => {
+                            this.ended = true;
+                            Poll::Ready(Some(Err(CurpError::internal(
+                                "unexpected END in server-streaming",
+                            ))))
+                        }
+                        Err(e) => {
+                            this.ended = true;
+                            Poll::Ready(Some(Err(e)))
+                        }
                     }
                 }
-                Frame::End => {
-                    this.ended = true;
-                    Poll::Ready(Some(Err(CurpError::internal(
-                        "unexpected END in server-streaming",
-                    ))))
-                }
-            },
-            Poll::Ready(Err(e)) => {
-                this.ended = true;
-                Poll::Ready(Some(Err(e)))
+                Poll::Pending => Poll::Pending,
             }
-            Poll::Pending => Poll::Pending,
+        } else {
+            // Poisoned state
+            this.ended = true;
+            Poll::Ready(Some(Err(CurpError::internal("stream state poisoned"))))
         }
     }
 }

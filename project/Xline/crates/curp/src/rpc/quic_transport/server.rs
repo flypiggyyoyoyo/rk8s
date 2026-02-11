@@ -3,11 +3,12 @@
 //! This module provides `QuicGrpcServer` which accepts QUIC connections
 //! and dispatches RPC calls to the appropriate service methods.
 
-use std::{marker::PhantomData, sync::Arc};
+use std::{marker::PhantomData, sync::Arc, task::Poll};
 
-use futures::Stream;
+use futures::{Stream, future::BoxFuture};
 use gm_quic::prelude::{Connection, QuicListeners};
 use prost::Message;
+use tokio::task::JoinHandle;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, error};
 
@@ -63,7 +64,7 @@ where
     ///
     /// This method runs the accept loop and dispatches incoming streams
     /// to the appropriate RPC handlers.
-    pub async fn serve(self, listeners: QuicListeners) -> Result<(), CurpError> {
+    pub async fn serve(self, listeners: Arc<QuicListeners>) -> Result<(), CurpError> {
         let service = self.service;
         let inner_service = self.inner_service;
 
@@ -91,6 +92,19 @@ where
         }
 
         Ok(())
+    }
+
+    /// Spawn a handler for a single QUIC connection.
+    ///
+    /// This is useful for custom accept loops (e.g., multi-service dispatchers
+    /// in integration tests) where the caller manages the accept loop and
+    /// routes connections to the appropriate server instance.
+    pub fn spawn_connection(&self, conn: Connection) -> JoinHandle<()> {
+        let svc = Arc::clone(&self.service);
+        let inner_svc = Arc::clone(&self.inner_service);
+        tokio::spawn(async move {
+            Self::handle_connection(conn, svc, inner_svc).await;
+        })
     }
 
     /// Handle a single connection
@@ -585,80 +599,116 @@ where
         R: AsyncRead + Unpin + Send + 'static,
         Msg: Message + Default + Send + 'static,
     {
-        let reader = FrameReader::new_client_streaming(recv);
-        Box::new(ClientStreamingAdapter::<R, Msg> {
-            reader,
+        // Box-erase the reader type so the adapter doesn't need a generic R
+        let boxed_recv: Box<dyn AsyncRead + Unpin + Send> = Box::new(recv);
+        let reader = FrameReader::new_client_streaming(boxed_recv);
+        Box::new(ClientStreamingAdapter::<Msg> {
+            state: ClientStreamState::Idle(reader),
             ended: false,
             _phantom: PhantomData,
         })
     }
 }
 
+/// Type alias for the box-erased async reader used in client-streaming
+type BoxedAsyncRead = Box<dyn AsyncRead + Unpin + Send>;
+
+/// Internal state for `ClientStreamingAdapter`
+enum ClientStreamState<Msg> {
+    /// Idle — reader is available for the next read
+    Idle(FrameReader<BoxedAsyncRead>),
+    /// Reading — a `read_frame` future is in flight
+    Reading(BoxFuture<'static, (Result<Frame, CurpError>, FrameReader<BoxedAsyncRead>)>),
+    /// Poisoned — state was taken and not restored (should not happen)
+    Poisoned,
+    /// Phantom
+    _Phantom(PhantomData<Msg>),
+}
+
 /// Adapter that converts a `FrameReader` (client-streaming mode) into a `Stream`
 ///
 /// Reads DATA frames and decodes them as protobuf messages.
 /// Terminates when an END frame is received.
-struct ClientStreamingAdapter<R, Msg>
-where
-    R: AsyncRead + Unpin,
-{
-    /// Frame reader in client-streaming mode
-    reader: FrameReader<R>,
+///
+/// Uses an enum state machine to persist the in-flight `read_frame()` future
+/// across polls, avoiding the "recreated future" bug.
+struct ClientStreamingAdapter<Msg> {
+    /// State machine: idle (holding reader) or reading (holding future)
+    state: ClientStreamState<Msg>,
     /// Whether the stream has ended
     ended: bool,
     /// Phantom for message type
     _phantom: PhantomData<Msg>,
 }
 
-// SAFETY: All fields are `Unpin` — `FrameReader<R>` where `R: Unpin` is `Unpin`,
-// `bool` is `Unpin`, `PhantomData` is `Unpin`.
-impl<R: AsyncRead + Unpin, Msg> Unpin for ClientStreamingAdapter<R, Msg> {}
+// All fields are `Send` when `Msg: Send`:
+// - `FrameReader<BoxedAsyncRead>` is `Send` (BoxedAsyncRead = Box<dyn AsyncRead + Unpin + Send>)
+// - `BoxFuture<'static, _>` is `Send` (= Pin<Box<dyn Future + Send>>)
+// - `bool` and `PhantomData<Msg>` are `Send`
+// So `ClientStreamingAdapter<Msg>` auto-implements `Send`.
 
-impl<R, Msg> Stream for ClientStreamingAdapter<R, Msg>
+impl<Msg> Unpin for ClientStreamingAdapter<Msg> {}
+
+impl<Msg> Stream for ClientStreamingAdapter<Msg>
 where
-    R: AsyncRead + Unpin + Send,
-    Msg: Message + Default,
+    Msg: Message + Default + Send + 'static,
 {
     type Item = Result<Msg, CurpError>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        use std::task::Poll;
-
+    ) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
 
         if this.ended {
             return Poll::Ready(None);
         }
 
-        let fut = this.reader.read_frame();
-        tokio::pin!(fut);
-
-        match fut.poll(cx) {
-            Poll::Ready(Ok(frame)) => match frame {
-                Frame::Data(data) => {
-                    let msg = Msg::decode(data.as_slice())
-                        .map_err(|e| CurpError::internal(format!("decode error: {e}")));
-                    Poll::Ready(Some(msg))
-                }
-                Frame::End => {
-                    this.ended = true;
-                    Poll::Ready(None)
-                }
-                Frame::Status { .. } => {
-                    this.ended = true;
-                    Poll::Ready(Some(Err(CurpError::internal(
-                        "unexpected STATUS in client-streaming request",
-                    ))))
-                }
-            },
-            Poll::Ready(Err(e)) => {
-                this.ended = true;
-                Poll::Ready(Some(Err(e)))
+        // If idle, start a new read
+        if matches!(this.state, ClientStreamState::Idle(_)) {
+            let state = std::mem::replace(&mut this.state, ClientStreamState::Poisoned);
+            if let ClientStreamState::Idle(mut reader) = state {
+                this.state = ClientStreamState::Reading(Box::pin(async move {
+                    let result = reader.read_frame().await;
+                    (result, reader)
+                }));
             }
-            Poll::Pending => Poll::Pending,
+        }
+
+        // Poll the in-flight future
+        if let ClientStreamState::Reading(ref mut fut) = this.state {
+            match fut.as_mut().poll(cx) {
+                Poll::Ready((result, reader)) => {
+                    this.state = ClientStreamState::Idle(reader);
+                    match result {
+                        Ok(Frame::Data(data)) => {
+                            let msg = Msg::decode(data.as_slice())
+                                .map_err(|e| CurpError::internal(format!("decode error: {e}")));
+                            Poll::Ready(Some(msg))
+                        }
+                        Ok(Frame::End) => {
+                            this.ended = true;
+                            Poll::Ready(None)
+                        }
+                        Ok(Frame::Status { .. }) => {
+                            this.ended = true;
+                            Poll::Ready(Some(Err(CurpError::internal(
+                                "unexpected STATUS in client-streaming request",
+                            ))))
+                        }
+                        Err(e) => {
+                            this.ended = true;
+                            Poll::Ready(Some(Err(e)))
+                        }
+                    }
+                }
+                Poll::Pending => Poll::Pending,
+            }
+        } else {
+            // Poisoned state
+            this.ended = true;
+            Poll::Ready(Some(Err(CurpError::internal("stream state poisoned"))))
         }
     }
 }
