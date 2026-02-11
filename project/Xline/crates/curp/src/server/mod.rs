@@ -367,3 +367,168 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
         self.inner.raw_curp()
     }
 }
+
+
+// QUIC transport service trait implementations
+#[cfg(all(feature = "quic", not(madsim)))]
+mod quic_service_impl {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use futures::{Stream, StreamExt};
+
+    use crate::{
+        cmd::{Command, CommandExecutor},
+        response::ResponseSender,
+        role_change::RoleChange,
+        rpc::{
+            AppendEntriesRequest, AppendEntriesResponse, CurpError, FetchClusterRequest,
+            FetchClusterResponse, FetchReadStateRequest, FetchReadStateResponse,
+            InstallSnapshotRequest, InstallSnapshotResponse, LeaseKeepAliveMsg, Metadata,
+            MoveLeaderRequest, MoveLeaderResponse, OpResponse, ProposeConfChangeRequest,
+            ProposeConfChangeResponse, ProposeRequest, PublishRequest, PublishResponse,
+            RecordRequest, RecordResponse, ReadIndexResponse, ShutdownRequest, ShutdownResponse,
+            VoteRequest, VoteResponse,
+        },
+    };
+
+    use super::Rpc;
+
+    #[async_trait]
+    impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> crate::rpc::CurpService
+        for Rpc<C, CE, RC>
+    {
+        async fn propose_stream(
+            &self,
+            req: ProposeRequest,
+            meta: Metadata,
+        ) -> Result<Box<dyn Stream<Item = Result<OpResponse, CurpError>> + Send + Unpin>, CurpError>
+        {
+            let bypassed = meta.is_bypassed();
+            let (tx, rx) = flume::bounded(2);
+            let resp_tx = Arc::new(ResponseSender::new(tx));
+            self.inner.propose_stream(&req, resp_tx, bypassed).await?;
+
+            // Convert flume stream to boxed stream with CurpError
+            let stream = rx.into_stream().map(|r| r.map_err(CurpError::from));
+            Ok(Box::new(stream))
+        }
+
+        fn record(&self, req: RecordRequest, _meta: Metadata) -> Result<RecordResponse, CurpError> {
+            self.inner.record(&req).map_err(CurpError::from)
+        }
+
+        fn read_index(&self, _meta: Metadata) -> Result<ReadIndexResponse, CurpError> {
+            self.inner.read_index().map_err(CurpError::from)
+        }
+
+        async fn shutdown(
+            &self,
+            req: ShutdownRequest,
+            meta: Metadata,
+        ) -> Result<ShutdownResponse, CurpError> {
+            let bypassed = meta.is_bypassed();
+            self.inner
+                .shutdown(req, bypassed)
+                .await
+                .map_err(CurpError::from)
+        }
+
+        async fn propose_conf_change(
+            &self,
+            req: ProposeConfChangeRequest,
+            meta: Metadata,
+        ) -> Result<ProposeConfChangeResponse, CurpError> {
+            let bypassed = meta.is_bypassed();
+            self.inner
+                .propose_conf_change(req, bypassed)
+                .await
+                .map_err(CurpError::from)
+        }
+
+        fn publish(
+            &self,
+            req: PublishRequest,
+            meta: Metadata,
+        ) -> Result<PublishResponse, CurpError> {
+            let bypassed = meta.is_bypassed();
+            self.inner.publish(req, bypassed).map_err(CurpError::from)
+        }
+
+        fn fetch_cluster(
+            &self,
+            req: FetchClusterRequest,
+        ) -> Result<FetchClusterResponse, CurpError> {
+            self.inner.fetch_cluster(req).map_err(CurpError::from)
+        }
+
+        fn fetch_read_state(
+            &self,
+            req: FetchReadStateRequest,
+        ) -> Result<FetchReadStateResponse, CurpError> {
+            self.inner.fetch_read_state(req).map_err(CurpError::from)
+        }
+
+        async fn move_leader(
+            &self,
+            req: MoveLeaderRequest,
+        ) -> Result<MoveLeaderResponse, CurpError> {
+            self.inner.move_leader(req).await.map_err(CurpError::from)
+        }
+
+        async fn lease_keep_alive(
+            &self,
+            stream: Box<dyn Stream<Item = Result<LeaseKeepAliveMsg, CurpError>> + Send + Unpin>,
+        ) -> Result<LeaseKeepAliveMsg, CurpError> {
+            // Convert CurpError stream to tonic::Status stream for inner implementation
+            let tonic_stream = stream.map(|r| r.map_err(|e| tonic::Status::from(e)));
+            self.inner
+                .lease_keep_alive(tonic_stream)
+                .await
+                .map_err(CurpError::from)
+        }
+    }
+
+    #[async_trait]
+    impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> crate::rpc::InnerCurpService
+        for Rpc<C, CE, RC>
+    {
+        fn append_entries(
+            &self,
+            req: AppendEntriesRequest,
+        ) -> Result<AppendEntriesResponse, CurpError> {
+            self.inner.append_entries(&req).map_err(CurpError::from)
+        }
+
+        fn vote(&self, req: VoteRequest) -> Result<VoteResponse, CurpError> {
+            self.inner.vote(&req).map_err(CurpError::from)
+        }
+
+        async fn install_snapshot(
+            &self,
+            stream: Box<dyn Stream<Item = Result<InstallSnapshotRequest, CurpError>> + Send + Unpin>,
+        ) -> Result<InstallSnapshotResponse, CurpError> {
+            // Convert CurpError stream to tonic::Status stream for inner implementation
+            let tonic_stream = stream.map(|r| r.map_err(|e| tonic::Status::from(e)));
+            self.inner
+                .install_snapshot(tonic_stream)
+                .await
+                .map_err(CurpError::from)
+        }
+
+        fn trigger_shutdown(&self) -> Result<(), CurpError> {
+            use crate::rpc::TriggerShutdownRequest;
+            let _resp = self.inner.trigger_shutdown(TriggerShutdownRequest {});
+            Ok(())
+        }
+
+        async fn try_become_leader_now(&self) -> Result<(), CurpError> {
+            use crate::rpc::TryBecomeLeaderNowRequest;
+            let _ = self.inner
+                .try_become_leader_now(&TryBecomeLeaderNowRequest {})
+                .await
+                .map_err(CurpError::from)?;
+            Ok(())
+        }
+    }
+}
