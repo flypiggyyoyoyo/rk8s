@@ -218,6 +218,8 @@ pub struct ClientBuilder {
     config: ClientConfig,
     /// Client tls config
     tls_config: Option<ClientTlsConfig>,
+    /// Transport configuration (default: Tonic)
+    transport: crate::rpc::transport::TransportConfig,
 }
 
 /// A client builder with bypass with local server
@@ -291,6 +293,15 @@ impl ClientBuilder {
         self
     }
 
+    /// Use QUIC transport (default is tonic gRPC)
+    #[cfg(all(feature = "quic", not(madsim)))]
+    #[inline]
+    #[must_use]
+    pub fn quic_transport(mut self, quic_client: Arc<gm_quic::prelude::QuicClient>) -> Self {
+        self.transport = crate::rpc::transport::TransportConfig::Quic(quic_client);
+        self
+    }
+
     /// Discover the initial states from some endpoints
     ///
     /// # Errors
@@ -361,6 +372,83 @@ impl ClientBuilder {
         Err(err)
     }
 
+    /// Discover the initial states from some endpoints using QUIC transport
+    ///
+    /// This is the QUIC equivalent of `discover_from`. It uses `QuicChannel`
+    /// to connect to the given addresses and fetch cluster information.
+    ///
+    /// # Errors
+    ///
+    /// Return `CurpError` for connection failure or some server errors.
+    #[cfg(all(feature = "quic", not(madsim)))]
+    #[inline]
+    pub async fn quic_discover_from(
+        mut self,
+        addrs: Vec<String>,
+    ) -> Result<Self, crate::rpc::CurpError> {
+        use crate::rpc::{CurpError, quic_transport::channel::QuicChannel};
+
+        let quic_client = match self.transport {
+            crate::rpc::transport::TransportConfig::Quic(ref c) => Arc::clone(c),
+            _ => {
+                return Err(CurpError::internal(
+                    "quic_discover_from requires quic_transport to be set",
+                ));
+            }
+        };
+
+        let propose_timeout = *self.config.propose_timeout();
+        let mut futs: FuturesUnordered<_> = addrs
+            .iter()
+            .map(|addr| {
+                let client = Arc::clone(&quic_client);
+                let addr = addr.clone();
+                async move {
+                    let channel = QuicChannel::connect_single(&addr, client).await?;
+                    let resp: FetchClusterResponse = channel
+                        .unary_call(
+                            "/commandpb.Protocol/FetchCluster",
+                            FetchClusterRequest::default(),
+                            vec![],
+                            propose_timeout,
+                        )
+                        .await?;
+                    Ok::<FetchClusterResponse, CurpError>(resp)
+                }
+            })
+            .collect();
+
+        let mut err = CurpError::internal("addrs is empty");
+        while let Some(r) = futs.next().await {
+            match r {
+                Ok(r) => {
+                    self.cluster_version = Some(r.cluster_version);
+                    if let Some(ref id) = r.leader_id {
+                        self.leader_state = Some((id.into(), r.term));
+                    }
+                    self.all_members = if self.is_raw_curp {
+                        Some(r.into_peer_urls())
+                    } else {
+                        Some(Self::quic_ensure_no_empty_address(r.into_client_urls())?)
+                    };
+                    return Ok(self);
+                }
+                Err(e) => err = e,
+            }
+        }
+        Err(err)
+    }
+
+    /// Ensures that no server has an empty list of addresses (QUIC variant)
+    #[cfg(all(feature = "quic", not(madsim)))]
+    fn quic_ensure_no_empty_address(
+        urls: HashMap<ServerId, Vec<String>>,
+    ) -> Result<HashMap<ServerId, Vec<String>>, crate::rpc::CurpError> {
+        (!urls.values().any(Vec::is_empty))
+            .then_some(urls)
+            .ok_or(crate::rpc::CurpError::internal("cluster not published"))
+    }
+
     /// Ensures that no server has an empty list of addresses.
     fn ensure_no_empty_address(
         urls: HashMap<ServerId, Vec<String>>,
@@ -385,6 +473,7 @@ impl ClientBuilder {
             builder.set_leader_state(id, term);
         }
         builder.set_is_raw_curp(self.is_raw_curp);
+        builder.set_transport(self.transport.clone());
         builder
     }
 

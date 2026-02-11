@@ -5,6 +5,7 @@
 
 use std::{marker::PhantomData, sync::Arc};
 
+use futures::Stream;
 use gm_quic::prelude::{Connection, QuicListeners};
 use prost::Message;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -14,7 +15,7 @@ use crate::{
     cmd::{Command, CommandExecutor},
     role_change::RoleChange,
     rpc::{
-        CurpError, CurpErrorWrapper,
+        CurpError, CurpErrorWrapper, ProposeRequest,
         quic_transport::codec::{
             Frame, FrameReader, FrameWriter, read_request_header, status_error, status_ok,
         },
@@ -136,7 +137,21 @@ where
 
         debug!("QUIC RPC: {path}");
 
-        // Dispatch based on path
+        // Streaming RPCs need special handling — they write directly to the stream
+        match path.as_str() {
+            "/commandpb.Protocol/ProposeStream" => {
+                return Self::handle_propose_stream(recv, send, &meta, &service).await;
+            }
+            "/commandpb.Protocol/LeaseKeepAlive" => {
+                return Self::handle_lease_keep_alive(recv, send, &service).await;
+            }
+            "/inner_messagepb.InnerProtocol/InstallSnapshot" => {
+                return Self::handle_install_snapshot(recv, send, &inner_service).await;
+            }
+            _ => {}
+        }
+
+        // Unary RPCs: dispatch → single response
         let result = Self::dispatch(&path, recv, &meta, &service, &inner_service).await;
 
         // Write response
@@ -209,16 +224,7 @@ where
             "/inner_messagepb.InnerProtocol/TryBecomeLeaderNow" => {
                 Self::handle_try_become_leader_now(inner_service).await
             }
-            // Streaming RPCs need special handling
-            "/commandpb.Protocol/ProposeStream" => {
-                Err(CurpError::internal("ProposeStream requires streaming handler"))
-            }
-            "/commandpb.Protocol/LeaseKeepAlive" => {
-                Err(CurpError::internal("LeaseKeepAlive requires streaming handler"))
-            }
-            "/inner_messagepb.InnerProtocol/InstallSnapshot" => {
-                Err(CurpError::internal("InstallSnapshot requires streaming handler"))
-            }
+            // Streaming RPCs are handled before dispatch
             _ => Err(CurpError::internal(format!("unknown path: {path}"))),
         }
     }
@@ -403,6 +409,257 @@ where
 
         service.try_become_leader_now().await?;
         Ok(TryBecomeLeaderNowResponse::default().encode_to_vec())
+    }
+
+    // ========================================================================
+    // Streaming RPC handlers
+    // ========================================================================
+
+    /// Handle ProposeStream (server-streaming)
+    ///
+    /// Protocol: client sends DATA(request) + END, server sends DATA* + STATUS
+    async fn handle_propose_stream<R, S>(
+        recv: R,
+        send: S,
+        meta: &Metadata,
+        service: &Arc<dyn CurpService>,
+    ) -> Result<(), CurpError>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        S: AsyncWrite + Unpin + Send + 'static,
+    {
+        use futures::StreamExt;
+
+        // Read the single request (same as unary)
+        let req: ProposeRequest = Self::read_request(recv).await?;
+
+        let mut writer = FrameWriter::new(send);
+
+        // Call service to get the response stream
+        match service.propose_stream(req, meta.clone()).await {
+            Ok(mut stream) => {
+                // Write each response as a DATA frame
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(resp) => {
+                            writer
+                                .write_frame(&Frame::Data(resp.encode_to_vec()))
+                                .await?;
+                        }
+                        Err(e) => {
+                            // Stream produced an error — send error STATUS and stop
+                            let wrapper = CurpErrorWrapper { err: Some(e) };
+                            writer
+                                .write_frame(&Frame::Status {
+                                    code: status_error(),
+                                    details: wrapper.encode_to_vec(),
+                                })
+                                .await?;
+                            return Ok(());
+                        }
+                    }
+                }
+                // Stream completed normally — send OK STATUS
+                writer
+                    .write_frame(&Frame::Status {
+                        code: status_ok(),
+                        details: vec![],
+                    })
+                    .await?;
+            }
+            Err(e) => {
+                let wrapper = CurpErrorWrapper { err: Some(e) };
+                writer
+                    .write_frame(&Frame::Status {
+                        code: status_error(),
+                        details: wrapper.encode_to_vec(),
+                    })
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle LeaseKeepAlive (client-streaming)
+    ///
+    /// Protocol: client sends DATA* + END, server sends DATA + STATUS
+    async fn handle_lease_keep_alive<R, S>(
+        recv: R,
+        send: S,
+        service: &Arc<dyn CurpService>,
+    ) -> Result<(), CurpError>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        S: AsyncWrite + Unpin + Send + 'static,
+    {
+        use crate::rpc::LeaseKeepAliveMsg;
+
+        // Build a stream from the client's DATA frames
+        let request_stream = Self::client_streaming_to_stream::<R, LeaseKeepAliveMsg>(recv);
+
+        let mut writer = FrameWriter::new(send);
+
+        // Call service
+        match service.lease_keep_alive(request_stream).await {
+            Ok(resp) => {
+                writer
+                    .write_frame(&Frame::Data(resp.encode_to_vec()))
+                    .await?;
+                writer
+                    .write_frame(&Frame::Status {
+                        code: status_ok(),
+                        details: vec![],
+                    })
+                    .await?;
+            }
+            Err(e) => {
+                let wrapper = CurpErrorWrapper { err: Some(e) };
+                writer
+                    .write_frame(&Frame::Status {
+                        code: status_error(),
+                        details: wrapper.encode_to_vec(),
+                    })
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle InstallSnapshot (client-streaming)
+    ///
+    /// Protocol: client sends DATA* + END, server sends DATA + STATUS
+    async fn handle_install_snapshot<R, S>(
+        recv: R,
+        send: S,
+        inner_service: &Arc<dyn InnerCurpService>,
+    ) -> Result<(), CurpError>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        S: AsyncWrite + Unpin + Send + 'static,
+    {
+        use crate::rpc::InstallSnapshotRequest;
+
+        // Build a stream from the client's DATA frames
+        let request_stream =
+            Self::client_streaming_to_stream::<R, InstallSnapshotRequest>(recv);
+
+        let mut writer = FrameWriter::new(send);
+
+        // Call service
+        match inner_service.install_snapshot(request_stream).await {
+            Ok(resp) => {
+                writer
+                    .write_frame(&Frame::Data(resp.encode_to_vec()))
+                    .await?;
+                writer
+                    .write_frame(&Frame::Status {
+                        code: status_ok(),
+                        details: vec![],
+                    })
+                    .await?;
+            }
+            Err(e) => {
+                let wrapper = CurpErrorWrapper { err: Some(e) };
+                writer
+                    .write_frame(&Frame::Status {
+                        code: status_error(),
+                        details: wrapper.encode_to_vec(),
+                    })
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Convert a client-streaming recv into a `Box<dyn Stream>` of decoded messages
+    ///
+    /// Reads DATA frames using `FrameReader::new_client_streaming` until END,
+    /// decoding each DATA frame as a protobuf message.
+    fn client_streaming_to_stream<R, Msg>(
+        recv: R,
+    ) -> Box<dyn Stream<Item = Result<Msg, CurpError>> + Send + Unpin>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        Msg: Message + Default + Send + 'static,
+    {
+        let reader = FrameReader::new_client_streaming(recv);
+        Box::new(ClientStreamingAdapter::<R, Msg> {
+            reader,
+            ended: false,
+            _phantom: PhantomData,
+        })
+    }
+}
+
+/// Adapter that converts a `FrameReader` (client-streaming mode) into a `Stream`
+///
+/// Reads DATA frames and decodes them as protobuf messages.
+/// Terminates when an END frame is received.
+struct ClientStreamingAdapter<R, Msg>
+where
+    R: AsyncRead + Unpin,
+{
+    /// Frame reader in client-streaming mode
+    reader: FrameReader<R>,
+    /// Whether the stream has ended
+    ended: bool,
+    /// Phantom for message type
+    _phantom: PhantomData<Msg>,
+}
+
+// SAFETY: All fields are `Unpin` — `FrameReader<R>` where `R: Unpin` is `Unpin`,
+// `bool` is `Unpin`, `PhantomData` is `Unpin`.
+impl<R: AsyncRead + Unpin, Msg> Unpin for ClientStreamingAdapter<R, Msg> {}
+
+impl<R, Msg> Stream for ClientStreamingAdapter<R, Msg>
+where
+    R: AsyncRead + Unpin + Send,
+    Msg: Message + Default,
+{
+    type Item = Result<Msg, CurpError>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        use std::task::Poll;
+
+        let this = self.get_mut();
+
+        if this.ended {
+            return Poll::Ready(None);
+        }
+
+        let fut = this.reader.read_frame();
+        tokio::pin!(fut);
+
+        match fut.poll(cx) {
+            Poll::Ready(Ok(frame)) => match frame {
+                Frame::Data(data) => {
+                    let msg = Msg::decode(data.as_slice())
+                        .map_err(|e| CurpError::internal(format!("decode error: {e}")));
+                    Poll::Ready(Some(msg))
+                }
+                Frame::End => {
+                    this.ended = true;
+                    Poll::Ready(None)
+                }
+                Frame::Status { .. } => {
+                    this.ended = true;
+                    Poll::Ready(Some(Err(CurpError::internal(
+                        "unexpected STATUS in client-streaming request",
+                    ))))
+                }
+            },
+            Poll::Ready(Err(e)) => {
+                this.ended = true;
+                Poll::Ready(Some(Err(e)))
+            }
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 

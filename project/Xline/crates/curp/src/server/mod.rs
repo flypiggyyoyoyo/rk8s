@@ -276,8 +276,7 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
         sps: Vec<SpObject<C>>,
         ucps: Vec<UcpObject<C>>,
     ) -> Self {
-        #[allow(clippy::panic)]
-        let curp_node = match CurpNode::new(
+        Self::new_inner(
             cluster_info,
             is_leader,
             executor,
@@ -289,6 +288,75 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
             client_tls_config,
             sps,
             ucps,
+            crate::rpc::TransportConfig::default(),
+        )
+    }
+
+    /// Create a new `Rpc` with QUIC transport
+    ///
+    /// This only creates the `Rpc` instance. To start the QUIC server,
+    /// call `QuicGrpcServer::new(rpc).serve(listeners)` separately.
+    #[cfg(all(feature = "quic", not(madsim)))]
+    #[allow(dead_code)] // Will be used in integration tests
+    pub fn new_with_quic(
+        cluster_info: Arc<ClusterInfo>,
+        is_leader: bool,
+        executor: Arc<CE>,
+        snapshot_allocator: Box<dyn SnapshotAllocator>,
+        role_change: RC,
+        curp_cfg: Arc<CurpConfig>,
+        storage: Arc<DB<C>>,
+        task_manager: Arc<TaskManager>,
+        client_tls_config: Option<ClientTlsConfig>,
+        sps: Vec<SpObject<C>>,
+        ucps: Vec<UcpObject<C>>,
+        quic_client: Arc<gm_quic::prelude::QuicClient>,
+    ) -> Self {
+        Self::new_inner(
+            cluster_info,
+            is_leader,
+            executor,
+            snapshot_allocator,
+            role_change,
+            curp_cfg,
+            storage,
+            task_manager,
+            client_tls_config,
+            sps,
+            ucps,
+            crate::rpc::TransportConfig::Quic(quic_client),
+        )
+    }
+
+    /// Internal constructor with explicit transport configuration
+    fn new_inner(
+        cluster_info: Arc<ClusterInfo>,
+        is_leader: bool,
+        executor: Arc<CE>,
+        snapshot_allocator: Box<dyn SnapshotAllocator>,
+        role_change: RC,
+        curp_cfg: Arc<CurpConfig>,
+        storage: Arc<DB<C>>,
+        task_manager: Arc<TaskManager>,
+        client_tls_config: Option<ClientTlsConfig>,
+        sps: Vec<SpObject<C>>,
+        ucps: Vec<UcpObject<C>>,
+        transport: crate::rpc::TransportConfig,
+    ) -> Self {
+        #[allow(clippy::panic)]
+        let curp_node = match CurpNode::new_with_transport(
+            cluster_info,
+            is_leader,
+            executor,
+            snapshot_allocator,
+            role_change,
+            curp_cfg,
+            storage,
+            task_manager,
+            client_tls_config,
+            sps,
+            ucps,
+            transport,
         ) {
             Ok(n) => n,
             Err(err) => {
