@@ -189,7 +189,7 @@ impl QuicCurpGroup {
             let role_change_arc = role_change_cb.get_inner_arc();
             let curp_storage = Arc::new(DB::open(&config.engine_cfg).unwrap());
 
-            let rpc = Rpc::new_with_quic(
+            let rpc = Rpc::new_with_quic_for_test(
                 cluster_info,
                 name == leader_name,
                 ce,
@@ -269,7 +269,7 @@ impl QuicCurpGroup {
     ) -> impl ClientApi<Error = tonic::Status, Cmd = TestCommand> + use<> {
         let addrs: Vec<String> = self.all_addrs().cloned().collect();
         ClientBuilder::new(ClientConfig::default(), true)
-            .quic_transport(Arc::clone(&self.quic_client))
+            .quic_transport_for_test(Arc::clone(&self.quic_client))
             .quic_discover_from(addrs)
             .await
             .unwrap()
@@ -281,7 +281,7 @@ impl QuicCurpGroup {
     pub async fn try_get_leader(&self) -> Option<(ServerId, u64)> {
         for node in self.nodes.values() {
             let channel =
-                match QuicChannel::connect_single(&node.addr, Arc::clone(&self.quic_client)).await
+                match QuicChannel::connect_single_for_test(&node.addr, Arc::clone(&self.quic_client)).await
                 {
                     Ok(ch) => ch,
                     Err(_) => continue,

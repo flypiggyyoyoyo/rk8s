@@ -31,6 +31,10 @@ pub struct QuicChannel {
     addrs: Arc<RwLock<Vec<String>>>,
     /// Round-robin index for load balancing
     index: Arc<AtomicUsize>,
+    /// If true, DNS failures fall back to 127.0.0.1 with the original SNI.
+    /// This is ONLY for testing with fake hostnames (e.g. "s0.test").
+    /// In production this MUST be false — DNS failure should be a hard error.
+    allow_localhost_fallback: bool,
 }
 
 impl std::fmt::Debug for QuicChannel {
@@ -42,13 +46,28 @@ impl std::fmt::Debug for QuicChannel {
 }
 
 impl QuicChannel {
-    /// Create a new QUIC channel
+    /// Create a new QUIC channel (production: DNS failure = hard error)
     #[inline]
     pub fn new(client: Arc<QuicClient>) -> Self {
         Self {
             client,
             addrs: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(AtomicUsize::new(0)),
+            allow_localhost_fallback: false,
+        }
+    }
+
+    /// Create a new QUIC channel with localhost fallback enabled (test only)
+    ///
+    /// When DNS resolution fails, falls back to 127.0.0.1 with the original
+    /// server name as SNI. This is needed for fake hostnames like "s0.test".
+    #[inline]
+    pub fn new_for_test(client: Arc<QuicClient>) -> Self {
+        Self {
+            client,
+            addrs: Arc::new(RwLock::new(Vec::new())),
+            index: Arc::new(AtomicUsize::new(0)),
+            allow_localhost_fallback: true,
         }
     }
 
@@ -94,12 +113,17 @@ impl QuicChannel {
         let addr_str = addr.strip_prefix("quic://").unwrap_or(&addr);
 
         // Try connect() first (does DNS resolution + connect).
-        // If DNS fails, fall back to connected_to() with localhost resolution.
-        // This supports both production (real DNS) and testing (fake hostnames).
         match self.client.connect(addr_str).await {
             Ok(conn) => Ok(conn),
             Err(e) => {
-                // Parse server_name and port for fallback
+                if !self.allow_localhost_fallback {
+                    // Production: DNS failure is a hard error
+                    return Err(CurpError::internal(format!(
+                        "QUIC connect error for {addr_str}: {e}"
+                    )));
+                }
+
+                // Test-only fallback: resolve to 127.0.0.1 with original SNI
                 let (server_name, port_str) = addr_str.rsplit_once(':').ok_or_else(|| {
                     CurpError::internal(format!("invalid address format: {addr_str}"))
                 })?;
@@ -107,12 +131,11 @@ impl QuicChannel {
                     CurpError::internal(format!("invalid port in address: {addr_str}"))
                 })?;
 
-                // Try resolving to localhost (127.0.0.1) as fallback
                 let fallback_addr =
                     std::net::SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), port);
                 tracing::warn!(
                     "DNS lookup failed for {server_name}:{port} ({e}), \
-                     falling back to {fallback_addr} with SNI {server_name}"
+                     falling back to {fallback_addr} with SNI {server_name} (test mode)"
                 );
                 self.client
                     .connected_to(server_name, [fallback_addr])
@@ -328,6 +351,16 @@ impl QuicChannel {
     /// Connect to a single address (for discovery)
     pub async fn connect_single(addr: &str, client: Arc<QuicClient>) -> Result<Self, CurpError> {
         let channel = Self::new(client);
+        channel.add_addr(addr).await?;
+        Ok(channel)
+    }
+
+    /// Connect to a single address with localhost fallback (test only)
+    pub async fn connect_single_for_test(
+        addr: &str,
+        client: Arc<QuicClient>,
+    ) -> Result<Self, CurpError> {
+        let channel = Self::new_for_test(client);
         channel.add_addr(addr).await?;
         Ok(channel)
     }

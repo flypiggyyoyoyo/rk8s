@@ -324,7 +324,42 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
             client_tls_config,
             sps,
             ucps,
-            crate::rpc::TransportConfig::Quic(quic_client),
+            crate::rpc::TransportConfig::Quic(quic_client, false),
+        )
+    }
+
+    /// Create a new `Rpc` with QUIC transport and localhost DNS fallback (test only)
+    ///
+    /// Same as `new_with_quic` but enables localhost fallback for fake hostnames.
+    #[cfg(all(feature = "quic", not(madsim)))]
+    #[allow(dead_code)]
+    pub fn new_with_quic_for_test(
+        cluster_info: Arc<ClusterInfo>,
+        is_leader: bool,
+        executor: Arc<CE>,
+        snapshot_allocator: Box<dyn SnapshotAllocator>,
+        role_change: RC,
+        curp_cfg: Arc<CurpConfig>,
+        storage: Arc<DB<C>>,
+        task_manager: Arc<TaskManager>,
+        client_tls_config: Option<ClientTlsConfig>,
+        sps: Vec<SpObject<C>>,
+        ucps: Vec<UcpObject<C>>,
+        quic_client: Arc<gm_quic::prelude::QuicClient>,
+    ) -> Self {
+        Self::new_inner(
+            cluster_info,
+            is_leader,
+            executor,
+            snapshot_allocator,
+            role_change,
+            curp_cfg,
+            storage,
+            task_manager,
+            client_tls_config,
+            sps,
+            ucps,
+            crate::rpc::TransportConfig::Quic(quic_client, true),
         )
     }
 

@@ -19,8 +19,11 @@ pub(crate) enum TransportConfig {
     /// Use tonic gRPC (default, current behavior)
     Tonic,
     /// Use QUIC transport (requires gm-quic QuicClient)
+    ///
+    /// The bool flag enables localhost DNS fallback for testing with fake hostnames.
+    /// In production this MUST be false.
     #[cfg(all(feature = "quic", not(madsim)))]
-    Quic(Arc<QuicClient>),
+    Quic(Arc<QuicClient>, bool),
 }
 
 impl std::fmt::Debug for TransportConfig {
@@ -28,7 +31,7 @@ impl std::fmt::Debug for TransportConfig {
         match *self {
             Self::Tonic => write!(f, "TransportConfig::Tonic"),
             #[cfg(all(feature = "quic", not(madsim)))]
-            Self::Quic(_) => write!(f, "TransportConfig::Quic(..)"),
+            Self::Quic(..) => write!(f, "TransportConfig::Quic(..)"),
         }
     }
 }
@@ -38,7 +41,7 @@ impl Clone for TransportConfig {
         match *self {
             Self::Tonic => Self::Tonic,
             #[cfg(all(feature = "quic", not(madsim)))]
-            Self::Quic(ref c) => Self::Quic(Arc::clone(c)),
+            Self::Quic(ref c, fallback) => Self::Quic(Arc::clone(c), fallback),
         }
     }
 }

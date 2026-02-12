@@ -298,7 +298,23 @@ impl ClientBuilder {
     #[inline]
     #[must_use]
     pub fn quic_transport(mut self, quic_client: Arc<gm_quic::prelude::QuicClient>) -> Self {
-        self.transport = crate::rpc::transport::TransportConfig::Quic(quic_client);
+        self.transport = crate::rpc::transport::TransportConfig::Quic(quic_client, false);
+        self
+    }
+
+    /// Use QUIC transport with localhost DNS fallback (test only)
+    ///
+    /// When DNS resolution fails for a hostname, falls back to 127.0.0.1
+    /// with the original hostname as SNI. Only use this for testing with
+    /// fake hostnames like "s0.test".
+    #[cfg(all(feature = "quic", not(madsim)))]
+    #[inline]
+    #[must_use]
+    pub fn quic_transport_for_test(
+        mut self,
+        quic_client: Arc<gm_quic::prelude::QuicClient>,
+    ) -> Self {
+        self.transport = crate::rpc::transport::TransportConfig::Quic(quic_client, true);
         self
     }
 
@@ -388,8 +404,10 @@ impl ClientBuilder {
     ) -> Result<Self, crate::rpc::CurpError> {
         use crate::rpc::{CurpError, quic_transport::channel::QuicChannel};
 
-        let quic_client = match self.transport {
-            crate::rpc::transport::TransportConfig::Quic(ref c) => Arc::clone(c),
+        let (quic_client, allow_fallback) = match self.transport {
+            crate::rpc::transport::TransportConfig::Quic(ref c, fallback) => {
+                (Arc::clone(c), fallback)
+            }
             _ => {
                 return Err(CurpError::internal(
                     "quic_discover_from requires quic_transport to be set",
@@ -404,7 +422,11 @@ impl ClientBuilder {
                 let client = Arc::clone(&quic_client);
                 let addr = addr.clone();
                 async move {
-                    let channel = QuicChannel::connect_single(&addr, client).await?;
+                    let channel = if allow_fallback {
+                        QuicChannel::connect_single_for_test(&addr, client).await?
+                    } else {
+                        QuicChannel::connect_single(&addr, client).await?
+                    };
                     let resp: FetchClusterResponse = channel
                         .unary_call(
                             "/commandpb.Protocol/FetchCluster",

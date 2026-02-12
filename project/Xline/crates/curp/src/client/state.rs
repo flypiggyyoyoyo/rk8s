@@ -338,7 +338,9 @@ impl State {
                         rpc::connect(diff, addrs, self.immutable.tls_config.clone())
                     }
                     #[cfg(all(feature = "quic", not(madsim)))]
-                    TransportConfig::Quic(ref client) => rpc::quic_connect(diff, addrs, client),
+                    TransportConfig::Quic(ref client, fallback) => {
+                        rpc::quic_connect(diff, addrs, client, fallback)
+                    }
                 };
                 let _ig = e.insert(new_conn);
             } else {
@@ -499,8 +501,8 @@ impl StateBuilder {
                 rpc::connects(self.all_members.clone(), self.tls_config.as_ref()).collect()
             }
             #[cfg(all(feature = "quic", not(madsim)))]
-            TransportConfig::Quic(ref client) => {
-                rpc::quic_connects(self.all_members.clone(), client).collect()
+            TransportConfig::Quic(ref client, fallback) => {
+                rpc::quic_connects(self.all_members.clone(), client, fallback).collect()
             }
         }
     }

@@ -177,6 +177,11 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
                 let details_len = self.reader.read_u32().await.map_err(|e| {
                     CurpError::internal(format!("read STATUS details length error: {e}"))
                 })?;
+                if details_len > MAX_FRAME_LEN {
+                    return Err(CurpError::internal(
+                        "protocol violation: STATUS details too large",
+                    ));
+                }
                 let mut details = vec![0u8; details_len as usize];
                 if details_len > 0 {
                     let _ = self.reader.read_exact(&mut details).await.map_err(|e| {
@@ -528,7 +533,7 @@ mod tests {
     #[tokio::test]
     async fn test_frame_roundtrip_data() {
         let (client, server) = tokio::io::duplex(1024);
-        let (read_half, write_half) = tokio::io::split(server);
+        let (read_half, _write_half) = tokio::io::split(server);
         let (_, client_write) = tokio::io::split(client);
 
         let mut writer = FrameWriter::new(client_write);
