@@ -860,8 +860,8 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> CurpNode<C, CE, RC> {
                     .collect()
             }
             #[cfg(all(feature = "quic", not(madsim)))]
-            rpc::TransportConfig::Quic(ref client, fallback) => {
-                rpc::quic_inner_connects(cluster_info.peers_addrs(), client, fallback).collect()
+            rpc::TransportConfig::Quic(ref client, dns_fallback) => {
+                rpc::quic_inner_connects(cluster_info.peers_addrs(), client, dns_fallback).collect()
             }
         };
         let cmd_board = Arc::new(RwLock::new(CommandBoard::new()));

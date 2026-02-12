@@ -9,4 +9,5 @@ pub(crate) mod channel;
 pub(crate) mod server;
 
 pub use channel::QuicChannel;
+pub use channel::DnsFallback;
 pub use server::QuicGrpcServer;

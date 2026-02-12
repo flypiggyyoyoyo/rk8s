@@ -1263,24 +1263,20 @@ mod quic_connect_impl {
     // QUIC factory functions
     // ========================================================================
 
+    use crate::rpc::quic_transport::channel::DnsFallback;
+
     /// Create a single QUIC connect (analogous to `connect()`)
     pub(crate) fn quic_connect(
         id: ServerId,
         addrs: Vec<String>,
         client: &Arc<QuicClient>,
-        allow_localhost_fallback: bool,
+        dns_fallback: DnsFallback,
     ) -> Arc<dyn ConnectApi> {
-        let channel = Arc::new(if allow_localhost_fallback {
-            QuicChannel::new_for_test(Arc::clone(client))
-        } else {
-            QuicChannel::new(Arc::clone(client))
-        });
-        let channel_clone = Arc::clone(&channel);
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let _ = channel_clone.update_addrs(addrs).await;
-            });
-        });
+        let channel = Arc::new(QuicChannel::with_addrs(
+            Arc::clone(client),
+            addrs,
+            dns_fallback,
+        ));
         Arc::new(QuicConnect::new(id, channel))
     }
 
@@ -1288,33 +1284,27 @@ mod quic_connect_impl {
     pub(crate) fn quic_connects(
         members: std::collections::HashMap<ServerId, Vec<String>>,
         client: &Arc<QuicClient>,
-        allow_localhost_fallback: bool,
+        dns_fallback: DnsFallback,
     ) -> impl Iterator<Item = (ServerId, Arc<dyn ConnectApi>)> + use<> {
         let client = Arc::clone(client);
         members
             .into_iter()
-            .map(move |(id, addrs)| (id, quic_connect(id, addrs, &client, allow_localhost_fallback)))
+            .map(move |(id, addrs)| (id, quic_connect(id, addrs, &client, dns_fallback)))
     }
 
     /// Create QUIC inner connects for all members (analogous to `inner_connects()`)
     pub(crate) fn quic_inner_connects(
         members: std::collections::HashMap<ServerId, Vec<String>>,
         client: &Arc<QuicClient>,
-        allow_localhost_fallback: bool,
+        dns_fallback: DnsFallback,
     ) -> impl Iterator<Item = (ServerId, InnerConnectApiWrapper)> + use<> {
         let client = Arc::clone(client);
         members.into_iter().map(move |(id, addrs)| {
-            let channel = Arc::new(if allow_localhost_fallback {
-                QuicChannel::new_for_test(Arc::clone(&client))
-            } else {
-                QuicChannel::new(Arc::clone(&client))
-            });
-            let channel_clone = Arc::clone(&channel);
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    let _ = channel_clone.update_addrs(addrs).await;
-                });
-            });
+            let channel = Arc::new(QuicChannel::with_addrs(
+                Arc::clone(&client),
+                addrs,
+                dns_fallback,
+            ));
             (
                 id,
                 InnerConnectApiWrapper::new_from_arc(Arc::new(QuicInnerConnect::new(id, channel))),

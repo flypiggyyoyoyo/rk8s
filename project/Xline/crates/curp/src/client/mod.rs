@@ -298,7 +298,10 @@ impl ClientBuilder {
     #[inline]
     #[must_use]
     pub fn quic_transport(mut self, quic_client: Arc<gm_quic::prelude::QuicClient>) -> Self {
-        self.transport = crate::rpc::transport::TransportConfig::Quic(quic_client, false);
+        self.transport = crate::rpc::transport::TransportConfig::Quic(
+            quic_client,
+            crate::rpc::quic_transport::channel::DnsFallback::Disabled,
+        );
         self
     }
 
@@ -314,7 +317,10 @@ impl ClientBuilder {
         mut self,
         quic_client: Arc<gm_quic::prelude::QuicClient>,
     ) -> Self {
-        self.transport = crate::rpc::transport::TransportConfig::Quic(quic_client, true);
+        self.transport = crate::rpc::transport::TransportConfig::Quic(
+            quic_client,
+            crate::rpc::quic_transport::channel::DnsFallback::LocalhostForTest,
+        );
         self
     }
 
@@ -404,7 +410,7 @@ impl ClientBuilder {
     ) -> Result<Self, crate::rpc::CurpError> {
         use crate::rpc::{CurpError, quic_transport::channel::QuicChannel};
 
-        let (quic_client, allow_fallback) = match self.transport {
+        let (quic_client, dns_fallback) = match self.transport {
             crate::rpc::transport::TransportConfig::Quic(ref c, fallback) => {
                 (Arc::clone(c), fallback)
             }
@@ -422,10 +428,13 @@ impl ClientBuilder {
                 let client = Arc::clone(&quic_client);
                 let addr = addr.clone();
                 async move {
-                    let channel = if allow_fallback {
-                        QuicChannel::connect_single_for_test(&addr, client).await?
-                    } else {
-                        QuicChannel::connect_single(&addr, client).await?
+                    let channel = match dns_fallback {
+                        crate::rpc::quic_transport::channel::DnsFallback::LocalhostForTest => {
+                            QuicChannel::connect_single_for_test(&addr, client).await?
+                        }
+                        crate::rpc::quic_transport::channel::DnsFallback::Disabled => {
+                            QuicChannel::connect_single(&addr, client).await?
+                        }
                     };
                     let resp: FetchClusterResponse = channel
                         .unary_call(

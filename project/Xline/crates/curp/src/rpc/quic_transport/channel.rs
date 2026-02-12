@@ -23,6 +23,22 @@ use crate::rpc::CurpError;
 
 use super::codec::{Frame, FrameReader, FrameWriter, status_error, status_ok};
 
+/// Grace period for the send task to finish after receiving a cancel signal.
+/// If the task doesn't finish within this window, it is forcibly aborted.
+const SEND_TASK_GRACE_PERIOD: Duration = Duration::from_millis(100);
+
+/// DNS fallback policy for QUIC connections
+///
+/// Controls what happens when DNS resolution fails for a hostname.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DnsFallback {
+    /// DNS failure is a hard error (production default)
+    Disabled,
+    /// Fall back to 127.0.0.1 with the original hostname as SNI.
+    /// Only for testing with fake hostnames like "s0.test".
+    LocalhostForTest,
+}
+
 /// QUIC channel for managing connections and RPC calls
 pub struct QuicChannel {
     /// QUIC client for creating connections
@@ -31,10 +47,8 @@ pub struct QuicChannel {
     addrs: Arc<RwLock<Vec<String>>>,
     /// Round-robin index for load balancing
     index: Arc<AtomicUsize>,
-    /// If true, DNS failures fall back to 127.0.0.1 with the original SNI.
-    /// This is ONLY for testing with fake hostnames (e.g. "s0.test").
-    /// In production this MUST be false — DNS failure should be a hard error.
-    allow_localhost_fallback: bool,
+    /// DNS fallback policy
+    dns_fallback: DnsFallback,
 }
 
 impl std::fmt::Debug for QuicChannel {
@@ -53,7 +67,22 @@ impl QuicChannel {
             client,
             addrs: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(AtomicUsize::new(0)),
-            allow_localhost_fallback: false,
+            dns_fallback: DnsFallback::Disabled,
+        }
+    }
+
+    /// Create a new QUIC channel with initial addresses (no async needed)
+    #[inline]
+    pub fn with_addrs(
+        client: Arc<QuicClient>,
+        addrs: Vec<String>,
+        dns_fallback: DnsFallback,
+    ) -> Self {
+        Self {
+            client,
+            addrs: Arc::new(RwLock::new(addrs)),
+            index: Arc::new(AtomicUsize::new(0)),
+            dns_fallback,
         }
     }
 
@@ -67,7 +96,7 @@ impl QuicChannel {
             client,
             addrs: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(AtomicUsize::new(0)),
-            allow_localhost_fallback: true,
+            dns_fallback: DnsFallback::LocalhostForTest,
         }
     }
 
@@ -116,11 +145,29 @@ impl QuicChannel {
         match self.client.connect(addr_str).await {
             Ok(conn) => Ok(conn),
             Err(e) => {
-                if !self.allow_localhost_fallback {
-                    // Production: DNS failure is a hard error
-                    return Err(CurpError::internal(format!(
-                        "QUIC connect error for {addr_str}: {e}"
-                    )));
+                match self.dns_fallback {
+                    DnsFallback::Disabled => {
+                        // Production: any connect error is a hard error
+                        return Err(CurpError::internal(format!(
+                            "QUIC connect error for {addr_str}: {e}"
+                        )));
+                    }
+                    DnsFallback::LocalhostForTest => {
+                        // Only fall back for DNS-like errors (resolution failure).
+                        // If the error message doesn't look DNS-related, still
+                        // propagate it so real connectivity/TLS issues aren't masked.
+                        let err_msg = e.to_string().to_lowercase();
+                        let is_dns_like = err_msg.contains("dns")
+                            || err_msg.contains("resolve")
+                            || err_msg.contains("no such host")
+                            || err_msg.contains("name or service not known")
+                            || err_msg.contains("nodename nor servname");
+                        if !is_dns_like {
+                            return Err(CurpError::internal(format!(
+                                "QUIC connect error for {addr_str} (non-DNS): {e}"
+                            )));
+                        }
+                    }
                 }
 
                 // Test-only fallback: resolve to 127.0.0.1 with original SNI
@@ -270,6 +317,12 @@ impl QuicChannel {
     }
 
     /// Perform a client-streaming RPC call
+    ///
+    /// The send task is managed with a "single-exit cleanup" pattern:
+    /// the task is spawned inside the timeout, but its handle and cancel
+    /// signal are captured via `Option` so that cleanup runs unconditionally
+    /// after the main logic — regardless of success, `?` early-return, or
+    /// timeout cancellation.
     pub async fn client_streaming_call<Req, Resp>(
         &self,
         path: &str,
@@ -282,10 +335,21 @@ impl QuicChannel {
         Resp: Message + Default,
     {
         use futures::StreamExt;
+        use tokio::sync::oneshot;
 
         let conn = self.get_connection().await?;
 
-        tokio::time::timeout(timeout, async {
+        // These are set once the send task is spawned inside the timeout
+        // block, and read in the unconditional cleanup that follows.
+        let cancel_tx: Arc<std::sync::Mutex<Option<oneshot::Sender<()>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let send_handle: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+
+        let cancel_tx_inner = Arc::clone(&cancel_tx);
+        let send_handle_inner = Arc::clone(&send_handle);
+
+        let result = tokio::time::timeout(timeout, async {
             let (recv_stream, send_stream) = Self::open_bi_stream(&conn).await?;
 
             let mut writer = FrameWriter::new(send_stream);
@@ -297,29 +361,46 @@ impl QuicChannel {
             // Spawn a task to write all request messages concurrently.
             // The server may respond before the client finishes sending
             // (e.g., lease_keep_alive returns a client_id after the first message).
-            let send_handle = tokio::spawn(async move {
+            let (tx, mut cancel_rx) = oneshot::channel::<()>();
+            let handle = tokio::spawn(async move {
                 let mut stream = stream;
-                while let Some(req) = stream.next().await {
-                    let req_bytes = req.encode_to_vec();
-                    if writer.write_frame(&Frame::Data(req_bytes)).await.is_err() {
-                        break;
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = &mut cancel_rx => break,
+                        item = stream.next() => {
+                            match item {
+                                Some(req) => {
+                                    let req_bytes = req.encode_to_vec();
+                                    if writer.write_frame(&Frame::Data(req_bytes)).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                None => break,
+                            }
+                        }
                     }
                 }
+                // Graceful shutdown: write END frame and close the stream
                 let _ = writer.write_frame(&Frame::End).await;
                 let mut send_stream: StreamWriter = writer.into_inner();
                 let _ = send_stream.shutdown().await;
             });
+
+            // Store handles so the outer cleanup can always reach them.
+            *cancel_tx_inner.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+            *send_handle_inner.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
+
+            // --- Main read logic (any `?` here is safe: cleanup runs after) ---
 
             // Read response (may arrive before sending completes)
             let frame = reader.read_frame().await?;
             let resp_bytes = match frame {
                 Frame::Data(data) => data,
                 Frame::Status { code, details } if code == status_error() => {
-                    send_handle.abort();
                     return Err(Self::decode_error(&details)?);
                 }
                 _ => {
-                    send_handle.abort();
                     return Err(CurpError::internal(
                         "unexpected frame in client-streaming response",
                     ));
@@ -328,7 +409,6 @@ impl QuicChannel {
 
             // Read status
             let status_frame = reader.read_frame().await?;
-            send_handle.abort(); // Cancel sending once we have the full response
             match status_frame {
                 Frame::Status { code, details } => {
                     if code != status_ok() {
@@ -344,8 +424,33 @@ impl QuicChannel {
             Resp::decode(resp_bytes.as_slice())
                 .map_err(|e| CurpError::internal(format!("decode response error: {e}")))
         })
-        .await
-        .map_err(|_| CurpError::RpcTransport(()))?
+        .await;
+
+        // === Unconditional cleanup: runs on success, error, AND timeout ===
+        let taken_cancel = cancel_tx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        let taken_handle = send_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(handle) = taken_handle {
+            if let Some(tx) = taken_cancel {
+                let _ = tx.send(());
+            }
+            // Pin the handle so we retain ownership across the select.
+            tokio::pin!(handle);
+            tokio::select! {
+                _ = &mut handle => {}
+                _ = tokio::time::sleep(SEND_TASK_GRACE_PERIOD) => {
+                    handle.abort();
+                    let _ = (&mut handle).await;
+                }
+            }
+        }
+
+        result.map_err(|_| CurpError::RpcTransport(()))?
     }
 
     /// Connect to a single address (for discovery)

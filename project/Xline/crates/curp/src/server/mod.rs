@@ -324,7 +324,10 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
             client_tls_config,
             sps,
             ucps,
-            crate::rpc::TransportConfig::Quic(quic_client, false),
+            crate::rpc::TransportConfig::Quic(
+                quic_client,
+                crate::rpc::quic_transport::channel::DnsFallback::Disabled,
+            ),
         )
     }
 
@@ -359,7 +362,10 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
             client_tls_config,
             sps,
             ucps,
-            crate::rpc::TransportConfig::Quic(quic_client, true),
+            crate::rpc::TransportConfig::Quic(
+                quic_client,
+                crate::rpc::quic_transport::channel::DnsFallback::LocalhostForTest,
+            ),
         )
     }
 
