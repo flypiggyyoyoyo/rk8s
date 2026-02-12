@@ -44,6 +44,7 @@ async fn quic_fetch_cluster() {
         .unwrap();
 
     assert_eq!(resp.members.len(), 3);
+    group.close().await;
 }
 
 /// Test that leader election works and we can find the leader via QUIC
@@ -56,6 +57,7 @@ async fn quic_get_leader() {
     let group = QuicCurpGroup::new(3).await;
     let (leader_id, term) = group.get_leader().await;
     assert!(term > 0 || leader_id > 0, "should find a leader");
+    group.close().await;
 }
 
 /// Test basic propose over QUIC (server-streaming via propose_stream)
@@ -83,6 +85,7 @@ async fn quic_basic_propose() {
         .unwrap()
         .0;
     assert_eq!(result, TestCommandResult::new(vec![0], vec![1]));
+    group.close().await;
 }
 
 /// Test synced propose over QUIC
@@ -99,4 +102,5 @@ async fn quic_synced_propose() {
     let (er, index) = client.propose(&cmd, None, false).await.unwrap().unwrap();
     assert_eq!(er, TestCommandResult::new(vec![], vec![]));
     assert_eq!(index.unwrap(), 1.into());
+    group.close().await;
 }

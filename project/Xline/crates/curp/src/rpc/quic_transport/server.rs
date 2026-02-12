@@ -216,7 +216,7 @@ where
                 Self::handle_fetch_read_state(recv, service).await
             }
             "/commandpb.Protocol/Record" => Self::handle_record(recv, meta, service).await,
-            "/commandpb.Protocol/ReadIndex" => Self::handle_read_index(meta, service).await,
+            "/commandpb.Protocol/ReadIndex" => Self::handle_read_index(recv, meta, service).await,
             "/commandpb.Protocol/Shutdown" => {
                 Self::handle_shutdown(recv, meta, service).await
             }
@@ -233,10 +233,10 @@ where
                 Self::handle_vote(recv, inner_service).await
             }
             "/inner_messagepb.InnerProtocol/TriggerShutdown" => {
-                Self::handle_trigger_shutdown(inner_service).await
+                Self::handle_trigger_shutdown(recv, inner_service).await
             }
             "/inner_messagepb.InnerProtocol/TryBecomeLeaderNow" => {
-                Self::handle_try_become_leader_now(inner_service).await
+                Self::handle_try_become_leader_now(recv, inner_service).await
             }
             // Streaming RPCs are handled before dispatch
             _ => Err(CurpError::internal(format!("unknown path: {path}"))),
@@ -312,10 +312,19 @@ where
         Ok(resp.encode_to_vec())
     }
 
-    async fn handle_read_index(
+    async fn handle_read_index<R>(
+        recv: R,
         meta: &Metadata,
         service: &Arc<dyn CurpService>,
-    ) -> Result<Vec<u8>, CurpError> {
+    ) -> Result<Vec<u8>, CurpError>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+    {
+        // Consume the request frames (DATA+END) even though the message is empty.
+        // This ensures the QUIC stream is properly closed and avoids connection
+        // reset noise from unconsumed frames.
+        let _req: crate::rpc::proto::commandpb::ReadIndexRequest =
+            Self::read_request(recv).await?;
         let resp = service.read_index(meta.clone())?;
         Ok(resp.encode_to_vec())
     }
@@ -407,20 +416,32 @@ where
         Ok(resp.encode_to_vec())
     }
 
-    async fn handle_trigger_shutdown(
+    async fn handle_trigger_shutdown<R>(
+        recv: R,
         service: &Arc<dyn InnerCurpService>,
-    ) -> Result<Vec<u8>, CurpError> {
+    ) -> Result<Vec<u8>, CurpError>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+    {
         use crate::rpc::proto::inner_messagepb::TriggerShutdownResponse;
 
+        // Consume request frames to properly close the stream
+        let _req: crate::rpc::TriggerShutdownRequest = Self::read_request(recv).await?;
         service.trigger_shutdown()?;
         Ok(TriggerShutdownResponse::default().encode_to_vec())
     }
 
-    async fn handle_try_become_leader_now(
+    async fn handle_try_become_leader_now<R>(
+        recv: R,
         service: &Arc<dyn InnerCurpService>,
-    ) -> Result<Vec<u8>, CurpError> {
+    ) -> Result<Vec<u8>, CurpError>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+    {
         use crate::rpc::proto::inner_messagepb::TryBecomeLeaderNowResponse;
 
+        // Consume request frames to properly close the stream
+        let _req: crate::rpc::TryBecomeLeaderNowRequest = Self::read_request(recv).await?;
         service.try_become_leader_now().await?;
         Ok(TryBecomeLeaderNowResponse::default().encode_to_vec())
     }

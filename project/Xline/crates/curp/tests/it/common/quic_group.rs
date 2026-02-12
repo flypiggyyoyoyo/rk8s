@@ -335,16 +335,29 @@ impl QuicCurpGroup {
     ) -> impl Iterator<Item = &mut mpsc::UnboundedReceiver<(TestCommand, curp::LogIndex)>> {
         self.nodes.values_mut().map(|node| &mut node.as_rx)
     }
+
+    /// Explicitly shut down the group (async, waits for cleanup).
+    ///
+    /// Prefer calling this at the end of each test instead of relying on Drop.
+    pub async fn close(self) {
+        // Shut down listeners first so the global singleton is released
+        self.listeners.shutdown();
+        self._accept_handle.abort();
+        for node in self.nodes.values() {
+            node.task_manager.shutdown(true).await;
+        }
+        // Small grace period for background tasks to finish
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 impl Drop for QuicCurpGroup {
     fn drop(&mut self) {
-        // Shut down the QUIC listeners first so the global singleton is released
-        // before the next test tries to create a new one.
+        // Best-effort cleanup if close() was not called.
+        // listeners.shutdown() and abort() are synchronous.
         self.listeners.shutdown();
         self._accept_handle.abort();
-        for node in self.nodes.values() {
-            node.task_manager.shutdown(true);
-        }
+        // We cannot await async shutdown in Drop, but we can fire-and-forget
+        // the shutdown signal. The serial_test attribute ensures no overlap.
     }
 }
