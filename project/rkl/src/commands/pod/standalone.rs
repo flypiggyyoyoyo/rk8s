@@ -7,7 +7,6 @@ use liboci_cli::{Delete, Start, State};
 use libruntime::rootpath;
 use tracing::{error, info};
 
-use crate::daemon::probe::collect_container_statuses;
 use libcontainer::syscall::syscall::create_syscall;
 
 pub fn delete_pod(pod_name: &str) -> Result<(), anyhow::Error> {
@@ -80,7 +79,7 @@ pub fn create_pod(pod_yaml: &str) -> Result<(), anyhow::Error> {
         .as_ref()
         .ok_or_else(|| anyhow!("PodSandbox config is required"))?;
     task_runner.sandbox_config = Some(config.clone());
-    let (pod_response, _) = task_runner.run_pod_sandbox(pod_request)?;
+    let (pod_response, _) = task_runner.sync_run_pod_sandbox(pod_request)?;
     let pod_sandbox_id = pod_response.pod_sandbox_id;
 
     let pause_pid = task_runner.pause_pid.ok_or_else(|| {
@@ -97,7 +96,7 @@ pub fn create_pod(pod_yaml: &str) -> Result<(), anyhow::Error> {
     let mut container_ids = Vec::new();
     for container in &task_runner.task.spec.containers {
         let create_request =
-            task_runner.build_create_container_request(&pod_sandbox_id, container)?;
+            task_runner.sync_build_create_container_request(&pod_sandbox_id, container)?;
         let create_response = task_runner.create_container(create_request)?;
         container_ids.push(create_response.container_id.clone());
         info!(
@@ -162,40 +161,7 @@ pub fn state_pod(pod_name: &str) -> Result<(), anyhow::Error> {
         );
     }
 
-    let probe_statuses = collect_container_statuses(pod_name);
-    if !probe_statuses.is_empty() {
-        println!("Probe status:");
-        for status in probe_statuses {
-            println!("  container: {}", status.name);
-            if let Some(probe) = status.readiness_probe {
-                println!(
-                    "    readiness: {:?} (successes: {}, failures: {}, last_error: {})",
-                    probe.state,
-                    probe.consecutive_successes,
-                    probe.consecutive_failures,
-                    probe.last_error.unwrap_or_else(|| "<none>".to_string())
-                );
-            }
-            if let Some(probe) = status.liveness_probe {
-                println!(
-                    "    liveness: {:?} (successes: {}, failures: {}, last_error: {})",
-                    probe.state,
-                    probe.consecutive_successes,
-                    probe.consecutive_failures,
-                    probe.last_error.unwrap_or_else(|| "<none>".to_string())
-                );
-            }
-            if let Some(probe) = status.startup_probe {
-                println!(
-                    "    startup: {:?} (successes: {}, failures: {}, last_error: {})",
-                    probe.state,
-                    probe.consecutive_successes,
-                    probe.consecutive_failures,
-                    probe.last_error.unwrap_or_else(|| "<none>".to_string())
-                );
-            }
-        }
-    }
+    // TODO: show probe status
 
     Ok(())
 }
