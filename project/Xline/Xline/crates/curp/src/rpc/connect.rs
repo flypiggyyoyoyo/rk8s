@@ -941,6 +941,7 @@ mod quic_connect_impl {
             ProposeConfChangeResponse, ProposeRequest, PublishRequest, PublishResponse,
             ReadIndexResponse, RecordRequest, RecordResponse, ShutdownRequest, ShutdownResponse,
             VoteRequest, VoteResponse,
+            MethodId,
             quic_transport::channel::QuicChannel,
         },
         snapshot::Snapshot,
@@ -994,7 +995,7 @@ mod quic_connect_impl {
             }
             self.channel
                 .server_streaming_call(
-                    "/commandpb.Protocol/ProposeStream",
+                    MethodId::ProposeStream,
                     request,
                     meta,
                     timeout,
@@ -1009,7 +1010,7 @@ mod quic_connect_impl {
             timeout: Duration,
         ) -> Result<RecordResponse, CurpError> {
             self.channel
-                .unary_call("/commandpb.Protocol/Record", request, vec![], timeout)
+                .unary_call(MethodId::Record, request, vec![], timeout)
                 .await
         }
 
@@ -1017,7 +1018,7 @@ mod quic_connect_impl {
             use crate::rpc::proto::commandpb::ReadIndexRequest;
             self.channel
                 .unary_call(
-                    "/commandpb.Protocol/ReadIndex",
+                    MethodId::ReadIndex,
                     ReadIndexRequest {},
                     vec![],
                     timeout,
@@ -1032,7 +1033,7 @@ mod quic_connect_impl {
         ) -> Result<ProposeConfChangeResponse, CurpError> {
             self.channel
                 .unary_call(
-                    "/commandpb.Protocol/ProposeConfChange",
+                    MethodId::ProposeConfChange,
                     request,
                     vec![],
                     timeout,
@@ -1046,7 +1047,7 @@ mod quic_connect_impl {
             timeout: Duration,
         ) -> Result<PublishResponse, CurpError> {
             self.channel
-                .unary_call("/commandpb.Protocol/Publish", request, vec![], timeout)
+                .unary_call(MethodId::Publish, request, vec![], timeout)
                 .await
         }
 
@@ -1056,7 +1057,7 @@ mod quic_connect_impl {
             timeout: Duration,
         ) -> Result<ShutdownResponse, CurpError> {
             self.channel
-                .unary_call("/commandpb.Protocol/Shutdown", request, vec![], timeout)
+                .unary_call(MethodId::Shutdown, request, vec![], timeout)
                 .await
         }
 
@@ -1067,7 +1068,7 @@ mod quic_connect_impl {
         ) -> Result<FetchClusterResponse, CurpError> {
             self.channel
                 .unary_call(
-                    "/commandpb.Protocol/FetchCluster",
+                    MethodId::FetchCluster,
                     request,
                     vec![],
                     timeout,
@@ -1082,7 +1083,7 @@ mod quic_connect_impl {
         ) -> Result<FetchReadStateResponse, CurpError> {
             self.channel
                 .unary_call(
-                    "/commandpb.Protocol/FetchReadState",
+                    MethodId::FetchReadState,
                     request,
                     vec![],
                     timeout,
@@ -1097,7 +1098,7 @@ mod quic_connect_impl {
         ) -> Result<MoveLeaderResponse, CurpError> {
             self.channel
                 .unary_call(
-                    "/commandpb.Protocol/MoveLeader",
+                    MethodId::MoveLeader,
                     request,
                     vec![],
                     timeout,
@@ -1131,7 +1132,7 @@ mod quic_connect_impl {
                 let result: Result<LeaseKeepAliveMsg, CurpError> = self
                     .channel
                     .client_streaming_call(
-                        "/commandpb.Protocol/LeaseKeepAlive",
+                        MethodId::LeaseKeepAlive,
                         Box::pin(stream),
                         vec![],
                         Duration::from_secs(30),
@@ -1188,7 +1189,7 @@ mod quic_connect_impl {
         ) -> Result<AppendEntriesResponse, CurpError> {
             self.channel
                 .unary_call(
-                    "/inner_messagepb.InnerProtocol/AppendEntries",
+                    MethodId::AppendEntries,
                     request,
                     vec![],
                     timeout,
@@ -1203,7 +1204,7 @@ mod quic_connect_impl {
         ) -> Result<VoteResponse, CurpError> {
             self.channel
                 .unary_call(
-                    "/inner_messagepb.InnerProtocol/Vote",
+                    MethodId::Vote,
                     request,
                     vec![],
                     timeout,
@@ -1220,7 +1221,7 @@ mod quic_connect_impl {
             let stream = super::install_snapshot_stream(term, leader_id, snapshot);
             self.channel
                 .client_streaming_call(
-                    "/inner_messagepb.InnerProtocol/InstallSnapshot",
+                    MethodId::InstallSnapshot,
                     Box::pin(stream),
                     vec![],
                     Duration::from_secs(60),
@@ -1234,7 +1235,7 @@ mod quic_connect_impl {
             let _resp: TriggerShutdownResponse = self
                 .channel
                 .unary_call(
-                    "/inner_messagepb.InnerProtocol/TriggerShutdown",
+                    MethodId::TriggerShutdown,
                     TriggerShutdownRequest::default(),
                     vec![],
                     Duration::from_secs(5),
@@ -1249,7 +1250,7 @@ mod quic_connect_impl {
             let _resp: TryBecomeLeaderNowResponse = self
                 .channel
                 .unary_call(
-                    "/inner_messagepb.InnerProtocol/TryBecomeLeaderNow",
+                    MethodId::TryBecomeLeaderNow,
                     TryBecomeLeaderNowRequest::default(),
                     vec![],
                     timeout,

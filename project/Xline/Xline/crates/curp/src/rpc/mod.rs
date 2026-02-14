@@ -86,7 +86,11 @@ pub(crate) use transport::TransportConfig;
 pub(crate) mod quic_transport;
 
 #[cfg(all(feature = "quic", not(madsim)))]
-pub use quic_transport::{DnsFallback, QuicChannel, QuicGrpcServer};
+pub use quic_transport::{DnsFallback, MethodId, QuicChannel, QuicGrpcServer};
+
+#[doc(hidden)]
+#[cfg(all(feature = "quic", any(test, feature = "quic-test"), not(madsim)))]
+pub use quic_transport::ALL_METHOD_IDS;
 
 // ============================================================================
 // Transport-agnostic service traits

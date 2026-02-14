@@ -18,7 +18,7 @@ use crate::{
     rpc::{
         CurpError, CurpErrorWrapper, ProposeRequest,
         quic_transport::codec::{
-            Frame, FrameReader, FrameWriter, read_request_header, status_error, status_ok,
+            Frame, FrameReader, FrameWriter, MethodId, read_request_header, status_error, status_ok,
         },
     },
     server::Rpc,
@@ -145,60 +145,93 @@ where
         S: AsyncWrite + Unpin + Send + 'static,
         R: AsyncRead + Unpin + Send + 'static,
     {
-        // Read request header
-        let (path, meta_pairs) = read_request_header(&mut recv).await?;
-        let meta = Metadata::from_pairs(meta_pairs);
+        // Read request header (returns raw u16, not validated yet)
+        let (method_raw, meta_pairs) = read_request_header(&mut recv).await?;
 
-        debug!("QUIC RPC: {path}");
-
-        // Streaming RPCs need special handling — they write directly to the stream
-        match path.as_str() {
-            "/commandpb.Protocol/ProposeStream" => {
-                return Self::handle_propose_stream(recv, send, &meta, &service).await;
-            }
-            "/commandpb.Protocol/LeaseKeepAlive" => {
-                return Self::handle_lease_keep_alive(recv, send, &service).await;
-            }
-            "/inner_messagepb.InnerProtocol/InstallSnapshot" => {
-                return Self::handle_install_snapshot(recv, send, &inner_service).await;
-            }
-            _ => {}
-        }
-
-        // Unary RPCs: dispatch → single response
-        let result = Self::dispatch(&path, recv, &meta, &service, &inner_service).await;
-
-        // Write response
-        let mut writer = FrameWriter::new(send);
-
-        match result {
-            Ok(response_bytes) => {
-                writer.write_frame(&Frame::Data(response_bytes)).await?;
-                writer
-                    .write_frame(&Frame::Status {
-                        code: status_ok(),
-                        details: vec![],
-                    })
-                    .await?;
-            }
-            Err(e) => {
-                let wrapper = CurpErrorWrapper { err: Some(e) };
-                let details = wrapper.encode_to_vec();
+        // Validate method ID — unknown IDs get a structured STATUS_ERROR response
+        let method = match MethodId::from_u16(method_raw) {
+            Some(m) => m,
+            None => {
+                let mut writer = FrameWriter::new(send);
+                let err = CurpError::internal(format!(
+                    "unknown method id: 0x{method_raw:04X}"
+                ));
+                let wrapper = CurpErrorWrapper { err: Some(err) };
                 writer
                     .write_frame(&Frame::Status {
                         code: status_error(),
-                        details,
+                        details: wrapper.encode_to_vec(),
                     })
                     .await?;
+                return Ok(());
+            }
+        };
+
+        let meta = Metadata::from_pairs(meta_pairs);
+        debug!("QUIC RPC: {}", method.name());
+
+        // Exhaustive match — no wildcard. New MethodId variants trigger compile error.
+        match method {
+            // --- Streaming RPCs (need direct access to send/recv streams) ---
+            MethodId::ProposeStream => {
+                return Self::handle_propose_stream(recv, send, &meta, &service).await;
+            }
+            MethodId::LeaseKeepAlive => {
+                return Self::handle_lease_keep_alive(recv, send, &service).await;
+            }
+            MethodId::InstallSnapshot => {
+                return Self::handle_install_snapshot(recv, send, &inner_service).await;
+            }
+
+            // --- Unary RPCs: explicitly listed ---
+            MethodId::FetchCluster
+            | MethodId::FetchReadState
+            | MethodId::Record
+            | MethodId::ReadIndex
+            | MethodId::Shutdown
+            | MethodId::ProposeConfChange
+            | MethodId::Publish
+            | MethodId::MoveLeader
+            | MethodId::AppendEntries
+            | MethodId::Vote
+            | MethodId::TriggerShutdown
+            | MethodId::TryBecomeLeaderNow => {
+                let result =
+                    Self::dispatch(method, recv, &meta, &service, &inner_service).await;
+
+                // Write response
+                let mut writer = FrameWriter::new(send);
+
+                match result {
+                    Ok(response_bytes) => {
+                        writer.write_frame(&Frame::Data(response_bytes)).await?;
+                        writer
+                            .write_frame(&Frame::Status {
+                                code: status_ok(),
+                                details: vec![],
+                            })
+                            .await?;
+                    }
+                    Err(e) => {
+                        let wrapper = CurpErrorWrapper { err: Some(e) };
+                        let details = wrapper.encode_to_vec();
+                        writer
+                            .write_frame(&Frame::Status {
+                                code: status_error(),
+                                details,
+                            })
+                            .await?;
+                    }
+                }
             }
         }
 
         Ok(())
     }
 
-    /// Dispatch RPC call based on path
+    /// Dispatch unary RPC call based on method ID (exhaustive match)
     async fn dispatch<R>(
-        path: &str,
+        method: MethodId,
         recv: R,
         meta: &Metadata,
         service: &Arc<dyn CurpService>,
@@ -207,39 +240,42 @@ where
     where
         R: AsyncRead + Unpin + Send + 'static,
     {
-        // Protocol service paths
-        match path {
-            "/commandpb.Protocol/FetchCluster" => {
+        match method {
+            MethodId::FetchCluster => {
                 Self::handle_fetch_cluster(recv, service).await
             }
-            "/commandpb.Protocol/FetchReadState" => {
+            MethodId::FetchReadState => {
                 Self::handle_fetch_read_state(recv, service).await
             }
-            "/commandpb.Protocol/Record" => Self::handle_record(recv, meta, service).await,
-            "/commandpb.Protocol/ReadIndex" => Self::handle_read_index(recv, meta, service).await,
-            "/commandpb.Protocol/Shutdown" => {
+            MethodId::Record => Self::handle_record(recv, meta, service).await,
+            MethodId::ReadIndex => Self::handle_read_index(recv, meta, service).await,
+            MethodId::Shutdown => {
                 Self::handle_shutdown(recv, meta, service).await
             }
-            "/commandpb.Protocol/ProposeConfChange" => {
+            MethodId::ProposeConfChange => {
                 Self::handle_propose_conf_change(recv, meta, service).await
             }
-            "/commandpb.Protocol/Publish" => Self::handle_publish(recv, meta, service).await,
-            "/commandpb.Protocol/MoveLeader" => Self::handle_move_leader(recv, service).await,
-            // Inner protocol service paths
-            "/inner_messagepb.InnerProtocol/AppendEntries" => {
+            MethodId::Publish => Self::handle_publish(recv, meta, service).await,
+            MethodId::MoveLeader => Self::handle_move_leader(recv, service).await,
+            MethodId::AppendEntries => {
                 Self::handle_append_entries(recv, inner_service).await
             }
-            "/inner_messagepb.InnerProtocol/Vote" => {
+            MethodId::Vote => {
                 Self::handle_vote(recv, inner_service).await
             }
-            "/inner_messagepb.InnerProtocol/TriggerShutdown" => {
+            MethodId::TriggerShutdown => {
                 Self::handle_trigger_shutdown(recv, inner_service).await
             }
-            "/inner_messagepb.InnerProtocol/TryBecomeLeaderNow" => {
+            MethodId::TryBecomeLeaderNow => {
                 Self::handle_try_become_leader_now(recv, inner_service).await
             }
-            // Streaming RPCs are handled before dispatch
-            _ => Err(CurpError::internal(format!("unknown path: {path}"))),
+            // Streaming methods are handled before dispatch — return error, don't panic
+            MethodId::ProposeStream | MethodId::LeaseKeepAlive | MethodId::InstallSnapshot => {
+                Err(CurpError::internal(format!(
+                    "streaming method {} routed to unary dispatch",
+                    method.name()
+                )))
+            }
         }
     }
 

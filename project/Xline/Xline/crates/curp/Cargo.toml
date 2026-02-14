@@ -70,6 +70,7 @@ tonic-build = { version = "0.5.0", package = "madsim-tonic-build" }
 [features]
 client-metrics = []
 quic = ["gm-quic", "rustls"]
+quic-test = ["quic"]
 
 [lints]
 workspace = true

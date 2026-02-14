@@ -5,8 +5,7 @@
 //!
 //! Request header (client → server):
 //! ```text
-//! [2 bytes] path length (big-endian u16)
-//! [N bytes] path string
+//! [2 bytes] method_id (big-endian u16, see `MethodId` enum)
 //! [2 bytes] metadata entry count
 //! For each entry: [2B key_len][key][2B val_len][val]
 //! ```
@@ -26,14 +25,97 @@ use crate::rpc::CurpError;
 /// Maximum frame length: 16 MB
 const MAX_FRAME_LEN: u32 = 16 * 1024 * 1024;
 
-/// Maximum path length: 256 bytes
-const MAX_PATH_LEN: u16 = 256;
-
 /// Maximum metadata entries: 64
 const MAX_METADATA_ENTRIES: u16 = 64;
 
 /// Maximum metadata key/value length: 4 KB
 const MAX_METADATA_KV_LEN: u16 = 4 * 1024;
+
+// ============================================================================
+// MethodId — single-source definition via macro
+// ============================================================================
+
+macro_rules! define_method_ids {
+    ( $( $(#[$meta:meta])* $variant:ident = $id:expr, $display:expr; )* ) => {
+        /// Numeric RPC method identifier for QUIC transport.
+        ///
+        /// Replaces gRPC-style string paths with compact u16 IDs.
+        /// Client and server must use the same mapping (guaranteed by this
+        /// single macro definition).
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[repr(u16)]
+        pub enum MethodId {
+            $( $(#[$meta])* $variant = $id, )*
+        }
+
+        impl MethodId {
+            /// Decode from raw u16. Returns `None` for unknown IDs.
+            pub fn from_u16(v: u16) -> Option<Self> {
+                match v {
+                    $( $id => Some(Self::$variant), )*
+                    _ => None,
+                }
+            }
+
+            /// Encode to u16.
+            #[inline]
+            pub fn as_u16(self) -> u16 {
+                self as u16
+            }
+
+            /// Human-readable name for logging/debugging.
+            pub fn name(self) -> &'static str {
+                match self {
+                    $( Self::$variant => $display, )*
+                }
+            }
+        }
+
+        /// All defined method IDs (for testing completeness).
+        /// Not part of the stable public API.
+        #[doc(hidden)]
+        #[cfg(any(test, feature = "quic-test"))]
+        pub const ALL_METHOD_IDS: &[MethodId] = &[
+            $( MethodId::$variant, )*
+        ];
+    };
+}
+
+define_method_ids! {
+    // Protocol service (0x00xx)
+    /// Fetch cluster membership information
+    FetchCluster       = 0x0001, "FetchCluster";
+    /// Fetch read state for linearizable reads
+    FetchReadState     = 0x0002, "FetchReadState";
+    /// Record a command proposal
+    Record             = 0x0003, "Record";
+    /// Read index for linearizable reads
+    ReadIndex          = 0x0004, "ReadIndex";
+    /// Shutdown the cluster
+    Shutdown           = 0x0005, "Shutdown";
+    /// Propose a configuration change
+    ProposeConfChange  = 0x0006, "ProposeConfChange";
+    /// Publish node information
+    Publish            = 0x0007, "Publish";
+    /// Move leader to another node
+    MoveLeader         = 0x0008, "MoveLeader";
+    /// Propose a command (server-streaming response)
+    ProposeStream      = 0x0009, "ProposeStream";
+    /// Lease keep-alive (client-streaming)
+    LeaseKeepAlive     = 0x000A, "LeaseKeepAlive";
+
+    // InnerProtocol service (0x01xx)
+    /// Append entries (Raft replication)
+    AppendEntries      = 0x0101, "AppendEntries";
+    /// Vote (Raft leader election)
+    Vote               = 0x0102, "Vote";
+    /// Install snapshot (Raft state transfer, client-streaming)
+    InstallSnapshot    = 0x0103, "InstallSnapshot";
+    /// Trigger shutdown on a follower
+    TriggerShutdown    = 0x0104, "TriggerShutdown";
+    /// Try to become leader immediately
+    TryBecomeLeaderNow = 0x0105, "TryBecomeLeaderNow";
+}
 
 /// Frame type constants
 const FRAME_TYPE_DATA: u8 = 0x01;
@@ -315,28 +397,24 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
         Self { writer }
     }
 
-    /// Write request header
+    /// Write request header (method ID + metadata)
     pub(crate) async fn write_request_header(
         &mut self,
-        path: &str,
+        method: MethodId,
         meta: &[(String, String)],
     ) -> Result<(), CurpError> {
-        let path_bytes = path.as_bytes();
-        if path_bytes.len() > MAX_PATH_LEN as usize {
-            return Err(CurpError::internal("header too large: path"));
-        }
-
-        #[allow(clippy::cast_possible_truncation)]
-        let path_len = path_bytes.len() as u16;
         self.writer
-            .write_u16(path_len)
+            .write_u16(method.as_u16())
             .await
-            .map_err(|e| CurpError::internal(format!("write path length error: {e}")))?;
-        self.writer
-            .write_all(path_bytes)
-            .await
-            .map_err(|e| CurpError::internal(format!("write path error: {e}")))?;
+            .map_err(|e| CurpError::internal(format!("write method id error: {e}")))?;
+        self.write_metadata(meta).await
+    }
 
+    /// Write metadata entries (shared by `write_request_header` and test helper)
+    async fn write_metadata(
+        &mut self,
+        meta: &[(String, String)],
+    ) -> Result<(), CurpError> {
         if meta.len() > MAX_METADATA_ENTRIES as usize {
             return Err(CurpError::internal("header too large: metadata entries"));
         }
@@ -450,24 +528,39 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
     }
 }
 
-/// Read request header from stream
+/// Test-only: write a raw u16 method ID header (bypasses `MethodId` type safety).
+#[doc(hidden)]
+#[cfg(feature = "quic-test")]
+impl<W: AsyncWrite + Unpin> FrameWriter<W> {
+    /// Write a raw u16 method ID + metadata. Used to test unknown-method error path.
+    #[doc(hidden)]
+    #[allow(unreachable_pub)]
+    pub async fn write_raw_method_header(
+        &mut self,
+        raw_method_id: u16,
+        meta: &[(String, String)],
+    ) -> Result<(), CurpError> {
+        self.writer
+            .write_u16(raw_method_id)
+            .await
+            .map_err(|e| CurpError::internal(format!("write method id error: {e}")))?;
+        self.write_metadata(meta).await
+    }
+}
+
+/// Read request header from stream.
+///
+/// Returns the raw method ID (u16) without validating it against `MethodId`.
+/// The caller (`handle_stream`) is responsible for converting to `MethodId`
+/// and returning a structured error for unknown IDs.
 pub(crate) async fn read_request_header<R: AsyncRead + Unpin>(
     r: &mut R,
-) -> Result<(String, Vec<(String, String)>), CurpError> {
-    // Read path
-    let path_len = r
+) -> Result<(u16, Vec<(String, String)>), CurpError> {
+    // Read method ID
+    let method_raw = r
         .read_u16()
         .await
-        .map_err(|e| CurpError::internal(format!("read path length error: {e}")))?;
-    if path_len > MAX_PATH_LEN {
-        return Err(CurpError::internal("header too large: path"));
-    }
-    let mut path_bytes = vec![0u8; path_len as usize];
-    let _ = r.read_exact(&mut path_bytes)
-        .await
-        .map_err(|e| CurpError::internal(format!("read path error: {e}")))?;
-    let path = String::from_utf8(path_bytes)
-        .map_err(|e| CurpError::internal(format!("invalid path encoding: {e}")))?;
+        .map_err(|e| CurpError::internal(format!("read method id error: {e}")))?;
 
     // Read metadata
     let meta_count = r
@@ -511,7 +604,7 @@ pub(crate) async fn read_request_header<R: AsyncRead + Unpin>(
         meta.push((key, value));
     }
 
-    Ok((path, meta))
+    Ok((method_raw, meta))
 }
 
 /// Status code for OK response
@@ -596,16 +689,49 @@ mod tests {
         let (_, client_write) = tokio::io::split(client);
 
         let mut writer = FrameWriter::new(client_write);
-        let path = "/curp.Protocol/FetchCluster";
         let meta = vec![
             ("bypass".to_owned(), "true".to_owned()),
             ("token".to_owned(), "jwt123".to_owned()),
         ];
-        writer.write_request_header(path, &meta).await.unwrap();
+        writer.write_request_header(MethodId::FetchCluster, &meta).await.unwrap();
 
-        let (read_path, read_meta) = read_request_header(&mut read_half).await.unwrap();
-        assert_eq!(read_path, path);
+        let (method_raw, read_meta) = read_request_header(&mut read_half).await.unwrap();
+        assert_eq!(method_raw, MethodId::FetchCluster.as_u16());
         assert_eq!(read_meta, meta);
+    }
+
+    #[test]
+    fn test_method_id_roundtrip() {
+        for &method in ALL_METHOD_IDS {
+            assert_eq!(
+                MethodId::from_u16(method.as_u16()),
+                Some(method),
+                "roundtrip failed for {:?} (0x{:04X})",
+                method,
+                method.as_u16(),
+            );
+        }
+    }
+
+    #[test]
+    fn test_method_id_no_duplicates() {
+        let mut seen = std::collections::HashSet::new();
+        for &method in ALL_METHOD_IDS {
+            assert!(
+                seen.insert(method.as_u16()),
+                "duplicate method ID: 0x{:04X} ({:?})",
+                method.as_u16(),
+                method,
+            );
+        }
+        assert_eq!(seen.len(), ALL_METHOD_IDS.len());
+    }
+
+    #[test]
+    fn test_method_id_unknown_returns_none() {
+        assert_eq!(MethodId::from_u16(0x0000), None);
+        assert_eq!(MethodId::from_u16(0xFFFF), None);
+        assert_eq!(MethodId::from_u16(0x00FF), None);
     }
 
     #[tokio::test]
@@ -679,4 +805,33 @@ mod tests {
         assert!(matches!(frame, Frame::Status { .. }));
         assert!(reader.is_terminal());
     }
+
+    /// Frozen mapping test: ensures MethodId numeric values never drift.
+    /// If this test fails, you've accidentally renumbered a method — which
+    /// breaks wire compatibility with older peers.
+    #[test]
+    fn test_method_id_frozen_mapping() {
+        // Protocol service (0x00xx)
+        assert_eq!(MethodId::FetchCluster.as_u16(),       0x0001);
+        assert_eq!(MethodId::FetchReadState.as_u16(),     0x0002);
+        assert_eq!(MethodId::Record.as_u16(),             0x0003);
+        assert_eq!(MethodId::ReadIndex.as_u16(),          0x0004);
+        assert_eq!(MethodId::Shutdown.as_u16(),           0x0005);
+        assert_eq!(MethodId::ProposeConfChange.as_u16(),  0x0006);
+        assert_eq!(MethodId::Publish.as_u16(),            0x0007);
+        assert_eq!(MethodId::MoveLeader.as_u16(),         0x0008);
+        assert_eq!(MethodId::ProposeStream.as_u16(),      0x0009);
+        assert_eq!(MethodId::LeaseKeepAlive.as_u16(),     0x000A);
+
+        // InnerProtocol service (0x01xx)
+        assert_eq!(MethodId::AppendEntries.as_u16(),      0x0101);
+        assert_eq!(MethodId::Vote.as_u16(),               0x0102);
+        assert_eq!(MethodId::InstallSnapshot.as_u16(),    0x0103);
+        assert_eq!(MethodId::TriggerShutdown.as_u16(),    0x0104);
+        assert_eq!(MethodId::TryBecomeLeaderNow.as_u16(), 0x0105);
+
+        // Total count guard: if you add a new method, update this assertion.
+        assert_eq!(ALL_METHOD_IDS.len(), 15);
+    }
+
 }

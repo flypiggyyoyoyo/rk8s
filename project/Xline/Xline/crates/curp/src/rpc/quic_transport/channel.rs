@@ -21,7 +21,7 @@ use tokio::sync::RwLock;
 
 use crate::rpc::CurpError;
 
-use super::codec::{Frame, FrameReader, FrameWriter, status_error, status_ok};
+use super::codec::{Frame, FrameReader, FrameWriter, MethodId, status_error, status_ok};
 
 /// Grace period for the send task to finish after receiving a cancel signal.
 /// If the task doesn't finish within this window, it is forcibly aborted.
@@ -211,7 +211,7 @@ impl QuicChannel {
     /// Perform a unary RPC call
     pub async fn unary_call<Req, Resp>(
         &self,
-        path: &str,
+        method: MethodId,
         req: Req,
         meta: Vec<(String, String)>,
         timeout: Duration,
@@ -230,7 +230,7 @@ impl QuicChannel {
             let mut reader = FrameReader::new_unary_response(recv_stream);
 
             // Write request header
-            writer.write_request_header(path, &meta).await?;
+            writer.write_request_header(method, &meta).await?;
 
             // Write request data
             let req_bytes = req.encode_to_vec();
@@ -280,7 +280,7 @@ impl QuicChannel {
     /// Perform a server-streaming RPC call
     pub async fn server_streaming_call<Req, Resp>(
         &self,
-        path: &str,
+        method: MethodId,
         req: Req,
         meta: Vec<(String, String)>,
         timeout: Duration,
@@ -299,7 +299,7 @@ impl QuicChannel {
         let mut writer = FrameWriter::new(send_stream);
 
         // Write request header and data
-        writer.write_request_header(path, &meta).await?;
+        writer.write_request_header(method, &meta).await?;
         let req_bytes = req.encode_to_vec();
         writer.write_frame(&Frame::Data(req_bytes)).await?;
         writer.write_frame(&Frame::End).await?;
@@ -325,7 +325,7 @@ impl QuicChannel {
     /// timeout cancellation.
     pub async fn client_streaming_call<Req, Resp>(
         &self,
-        path: &str,
+        method: MethodId,
         stream: Pin<Box<dyn Stream<Item = Req> + Send>>,
         meta: Vec<(String, String)>,
         timeout: Duration,
@@ -356,7 +356,7 @@ impl QuicChannel {
             let mut reader = FrameReader::new_unary_response(recv_stream);
 
             // Write request header
-            writer.write_request_header(path, &meta).await?;
+            writer.write_request_header(method, &meta).await?;
 
             // Spawn a task to write all request messages concurrently.
             // The server may respond before the client finishes sending
@@ -484,6 +484,71 @@ impl QuicChannel {
         Ok(wrapper
             .err
             .unwrap_or_else(|| CurpError::internal("missing error in wrapper")))
+    }
+}
+
+/// Test-only: send a raw method ID to test unknown-method error path.
+#[doc(hidden)]
+#[cfg(feature = "quic-test")]
+impl QuicChannel {
+    /// Send a raw u16 method ID (bypasses `MethodId` type safety).
+    /// Response validation is identical to `unary_call`.
+    #[doc(hidden)]
+    #[allow(unreachable_pub)]
+    pub async fn raw_unary_call<Resp>(
+        &self,
+        raw_method_id: u16,
+        req_bytes: Vec<u8>,
+        meta: Vec<(String, String)>,
+        timeout: Duration,
+    ) -> Result<Resp, CurpError>
+    where
+        Resp: Message + Default,
+    {
+        let conn = self.get_connection().await?;
+
+        tokio::time::timeout(timeout, async {
+            let (recv_stream, send_stream) = Self::open_bi_stream(&conn).await?;
+            let mut writer = FrameWriter::new(send_stream);
+            let mut reader = FrameReader::new_unary_response(recv_stream);
+
+            writer.write_raw_method_header(raw_method_id, &meta).await?;
+            writer.write_frame(&Frame::Data(req_bytes)).await?;
+            writer.write_frame(&Frame::End).await?;
+
+            let mut send_stream: StreamWriter = writer.into_inner();
+            send_stream.shutdown().await
+                .map_err(|e| CurpError::internal(format!("shutdown error: {e}")))?;
+
+            // Read response — same validation as unary_call
+            let frame = reader.read_frame().await?;
+            let resp_bytes = match frame {
+                Frame::Data(data) => data,
+                Frame::Status { code, details } if code == status_error() => {
+                    return Err(Self::decode_error(&details)?);
+                }
+                _ => {
+                    return Err(CurpError::internal("unexpected frame in raw unary response"));
+                }
+            };
+
+            let status_frame = reader.read_frame().await?;
+            match status_frame {
+                Frame::Status { code, details } => {
+                    if code != status_ok() {
+                        return Err(Self::decode_error(&details)?);
+                    }
+                }
+                _ => {
+                    return Err(CurpError::internal("expected STATUS frame"));
+                }
+            }
+
+            Resp::decode(resp_bytes.as_slice())
+                .map_err(|e| CurpError::internal(format!("decode response error: {e}")))
+        })
+        .await
+        .map_err(|_| CurpError::RpcTransport(()))?
     }
 }
 

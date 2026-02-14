@@ -408,7 +408,7 @@ impl ClientBuilder {
         mut self,
         addrs: Vec<String>,
     ) -> Result<Self, crate::rpc::CurpError> {
-        use crate::rpc::{CurpError, quic_transport::channel::QuicChannel};
+        use crate::rpc::{CurpError, MethodId, quic_transport::channel::QuicChannel};
 
         let (quic_client, dns_fallback) = match self.transport {
             crate::rpc::transport::TransportConfig::Quic(ref c, fallback) => {
@@ -438,7 +438,7 @@ impl ClientBuilder {
                     };
                     let resp: FetchClusterResponse = channel
                         .unary_call(
-                            "/commandpb.Protocol/FetchCluster",
+                            MethodId::FetchCluster,
                             FetchClusterRequest::default(),
                             vec![],
                             propose_timeout,

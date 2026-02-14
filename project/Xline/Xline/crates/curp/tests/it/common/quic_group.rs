@@ -9,7 +9,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use curp::{
     client::{ClientApi, ClientBuilder},
     members::{ClusterInfo, ServerId},
-    rpc::{FetchClusterRequest, FetchClusterResponse, QuicChannel, QuicGrpcServer},
+    rpc::{FetchClusterRequest, FetchClusterResponse, MethodId, QuicChannel, QuicGrpcServer},
     server::{
         conflict::test_pools::{TestSpecPool, TestUncomPool},
         Rpc, DB,
@@ -289,7 +289,7 @@ impl QuicCurpGroup {
 
             let result: Result<FetchClusterResponse, curp::rpc::CurpError> = channel
                 .unary_call(
-                    "/commandpb.Protocol/FetchCluster",
+                    MethodId::FetchCluster,
                     FetchClusterRequest::default(),
                     vec![],
                     Duration::from_secs(5),
