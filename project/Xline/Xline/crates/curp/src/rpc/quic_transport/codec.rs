@@ -458,11 +458,6 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
                 .map_err(|e| CurpError::internal(format!("write value error: {e}")))?;
         }
 
-        self.writer
-            .flush()
-            .await
-            .map_err(|e| CurpError::internal(format!("flush header error: {e}")))?;
-
         Ok(())
     }
 
@@ -513,12 +508,15 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
             }
         }
 
+        Ok(())
+    }
+
+    /// Flush buffered data to the underlying writer
+    pub(crate) async fn flush(&mut self) -> Result<(), CurpError> {
         self.writer
             .flush()
             .await
-            .map_err(|e| CurpError::internal(format!("flush frame error: {e}")))?;
-
-        Ok(())
+            .map_err(|e| CurpError::internal(format!("flush error: {e}")))
     }
 
     /// Consume writer and return underlying stream

@@ -331,7 +331,7 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
     /// Create a new `Rpc` with QUIC transport and localhost DNS fallback (test only)
     ///
     /// Same as `new_with_quic` but enables localhost fallback for fake hostnames.
-    #[cfg(feature = "quic")]
+    #[cfg(all(feature = "quic", any(test, feature = "quic-test")))]
     #[allow(dead_code)]
     pub fn new_with_quic_for_test(
         cluster_info: Arc<ClusterInfo>,

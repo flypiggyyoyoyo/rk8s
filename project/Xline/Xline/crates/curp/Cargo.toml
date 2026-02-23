@@ -15,7 +15,7 @@ version = "0.1.0"
 async-stream = { workspace = true }
 async-trait = { workspace = true }
 bincode = { workspace = true }
-bytes = "1.9"
+bytes = { workspace = true }
 clippy-utilities = { workspace = true }
 curp-external-api = { path = "../curp-external-api" }
 curp-test-utils = { path = "../curp-test-utils" }

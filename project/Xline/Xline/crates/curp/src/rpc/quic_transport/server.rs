@@ -10,7 +10,7 @@ use gm_quic::prelude::{Connection, QuicListeners};
 use prost::Message;
 use tokio::task::JoinHandle;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tracing::{debug, error};
+use tracing::{Instrument, debug, error};
 
 use crate::{
     cmd::{Command, CommandExecutor},
@@ -82,7 +82,7 @@ where
 
                     let _handle = tokio::spawn(async move {
                         Self::handle_connection(conn, svc, inner_svc).await;
-                    });
+                    }.instrument(tracing::debug_span!("quic_conn")));
                 }
                 Err(e) => {
                     error!("Listeners shutdown: {e}");
@@ -124,7 +124,7 @@ where
                         if let Err(e) = Self::handle_stream(send, recv, svc, inner_svc).await {
                             debug!("stream handler error: {e:?}");
                         }
-                    });
+                    }.instrument(tracing::debug_span!("quic_stream")));
                 }
                 Err(e) => {
                     debug!("accept stream error: {e}");
@@ -163,6 +163,7 @@ where
                         details: wrapper.encode_to_vec(),
                     })
                     .await?;
+                writer.flush().await?;
                 return Ok(());
             }
         };
@@ -223,6 +224,7 @@ where
                             .await?;
                     }
                 }
+                writer.flush().await?;
             }
         }
 
@@ -526,6 +528,7 @@ where
                                     details: wrapper.encode_to_vec(),
                                 })
                                 .await?;
+                            writer.flush().await?;
                             return Ok(());
                         }
                     }
@@ -548,6 +551,7 @@ where
                     .await?;
             }
         }
+        writer.flush().await?;
 
         Ok(())
     }
@@ -594,6 +598,7 @@ where
                     .await?;
             }
         }
+        writer.flush().await?;
 
         Ok(())
     }
@@ -641,6 +646,7 @@ where
                     .await?;
             }
         }
+        writer.flush().await?;
 
         Ok(())
     }
@@ -671,15 +677,13 @@ where
 type BoxedAsyncRead = Box<dyn AsyncRead + Unpin + Send>;
 
 /// Internal state for `ClientStreamingAdapter`
-enum ClientStreamState<Msg> {
+enum ClientStreamState {
     /// Idle — reader is available for the next read
     Idle(FrameReader<BoxedAsyncRead>),
     /// Reading — a `read_frame` future is in flight
     Reading(BoxFuture<'static, (Result<Frame, CurpError>, FrameReader<BoxedAsyncRead>)>),
     /// Poisoned — state was taken and not restored (should not happen)
     Poisoned,
-    /// Phantom
-    _Phantom(PhantomData<Msg>),
 }
 
 /// Adapter that converts a `FrameReader` (client-streaming mode) into a `Stream`
@@ -691,7 +695,7 @@ enum ClientStreamState<Msg> {
 /// across polls, avoiding the "recreated future" bug.
 struct ClientStreamingAdapter<Msg> {
     /// State machine: idle (holding reader) or reading (holding future)
-    state: ClientStreamState<Msg>,
+    state: ClientStreamState,
     /// Whether the stream has ended
     ended: bool,
     /// Phantom for message type

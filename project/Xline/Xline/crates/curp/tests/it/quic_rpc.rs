@@ -56,7 +56,7 @@ async fn quic_get_leader() {
 
     let group = QuicCurpGroup::new(3).await;
     let (leader_id, term) = group.get_leader().await;
-    assert!(term > 0 || leader_id > 0, "should find a leader");
+    assert!(term > 0 && leader_id > 0, "should find a leader");
     group.close().await;
 }
 

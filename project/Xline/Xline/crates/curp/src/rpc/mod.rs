@@ -1,11 +1,13 @@
 use std::{collections::HashMap, sync::Arc};
 
+#[cfg(feature = "quic")]
 use async_trait::async_trait;
 use curp_external_api::{
     InflightId,
     cmd::{ConflictCheck, PbCodec, PbSerializeError},
     conflict::EntryId,
 };
+#[cfg(feature = "quic")]
 use futures::Stream;
 use prost::Message;
 use serde::{Deserialize, Serialize};
@@ -107,23 +109,25 @@ pub use quic_transport::ALL_METHOD_IDS;
 /// Client side: inject tracing context into Metadata, then serialize to QUIC frame header.
 /// Server side: rebuild `tonic::metadata::MetadataMap` from Metadata for `extract_span()`,
 ///              and directly read bypass/token.
+#[cfg(feature = "quic")]
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)] // Will be used in QUIC transport implementation
 pub(crate) struct Metadata {
     /// Key-value pairs
     pairs: Vec<(String, String)>,
 }
 
-#[allow(dead_code)] // Will be used in QUIC transport implementation
+#[cfg(feature = "quic")]
 impl Metadata {
     /// Create a new empty metadata
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn new() -> Self {
         Self { pairs: Vec::new() }
     }
 
     /// Insert a key-value pair
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn insert(&mut self, key: impl Into<String>, value: impl Into<String>) {
         self.pairs.push((key.into(), value.into()));
     }
@@ -152,6 +156,7 @@ impl Metadata {
 
     /// Iterate over all key-value pairs (for serialization)
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.pairs.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
@@ -164,6 +169,7 @@ impl Metadata {
 
     /// Convert to `tonic::metadata::MetadataMap` (for server-side `extract_span`)
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn to_metadata_map(&self) -> tonic::metadata::MetadataMap {
         use tonic::metadata::{MetadataKey, MetadataValue};
 
@@ -184,7 +190,7 @@ impl Metadata {
 ///
 /// This trait abstracts the RPC methods so that both tonic and QUIC
 /// implementations can be used interchangeably by the dispatcher.
-#[allow(dead_code)] // Will be used in QUIC transport implementation
+#[cfg(feature = "quic")]
 #[async_trait]
 pub(crate) trait CurpService: Send + Sync + 'static {
     /// Handle propose stream request
@@ -239,7 +245,7 @@ pub(crate) trait CurpService: Send + Sync + 'static {
 /// Transport-agnostic service trait for internal protocol
 ///
 /// This trait abstracts the internal RPC methods used for Raft consensus.
-#[allow(dead_code)] // Will be used in QUIC transport implementation
+#[cfg(feature = "quic")]
 #[async_trait]
 pub(crate) trait InnerCurpService: Send + Sync + 'static {
     /// Handle append entries request

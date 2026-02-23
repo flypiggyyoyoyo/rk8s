@@ -36,6 +36,7 @@ pub enum DnsFallback {
     Disabled,
     /// Fall back to 127.0.0.1 with the original hostname as SNI.
     /// Only for testing with fake hostnames like "s0.test".
+    #[cfg(any(test, feature = "quic-test"))]
     LocalhostForTest,
 }
 
@@ -90,6 +91,7 @@ impl QuicChannel {
     ///
     /// When DNS resolution fails, falls back to 127.0.0.1 with the original
     /// server name as SNI. This is needed for fake hostnames like "s0.test".
+    #[cfg(any(test, feature = "quic-test"))]
     #[inline]
     pub fn new_for_test(client: Arc<QuicClient>) -> Self {
         Self {
@@ -131,65 +133,67 @@ impl QuicChannel {
             return Err(CurpError::RpcTransport(()));
         }
 
-        let idx = self.index.fetch_add(1, Ordering::Relaxed) % addrs.len();
-        let addr = addrs
-            .get(idx)
-            .ok_or_else(|| CurpError::internal("connection index out of bounds"))?
-            .clone();
+        let len = addrs.len();
+        let start = self.index.fetch_add(1, Ordering::Relaxed) % len;
+        let snapshot: Vec<String> = addrs.iter().cloned().collect();
         drop(addrs);
 
-        // Connect each time (gm-quic handles connection reuse internally)
-        let addr_str = addr.strip_prefix("quic://").unwrap_or(&addr);
+        // Try all addresses starting from round-robin index before giving up
+        let mut last_err = None;
+        for i in 0..len {
+            let idx = (start + i) % len;
+            let addr = &snapshot[idx];
+            let addr_str = addr
+                .strip_prefix("quic://")
+                .or_else(|| addr.strip_prefix("https://"))
+                .or_else(|| addr.strip_prefix("http://"))
+                .unwrap_or(addr);
 
-        // Try connect() first (does DNS resolution + connect).
+            match self.try_connect(addr_str).await {
+                Ok(conn) => return Ok(conn),
+                Err(e) => {
+                    tracing::debug!("QUIC connect failed for {addr_str}: {e:?}");
+                    last_err = Some(e);
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| CurpError::RpcTransport(())))
+    }
+
+    /// Try connecting to a single address, with DNS fallback in test mode
+    async fn try_connect(&self, addr_str: &str) -> Result<Connection, CurpError> {
         match self.client.connect(addr_str).await {
             Ok(conn) => Ok(conn),
-            Err(e) => {
-                match self.dns_fallback {
-                    DnsFallback::Disabled => {
-                        // Production: any connect error is a hard error
-                        return Err(CurpError::internal(format!(
-                            "QUIC connect error for {addr_str}: {e}"
-                        )));
-                    }
-                    DnsFallback::LocalhostForTest => {
-                        // Only fall back for DNS-like errors (resolution failure).
-                        // If the error message doesn't look DNS-related, still
-                        // propagate it so real connectivity/TLS issues aren't masked.
-                        let err_msg = e.to_string().to_lowercase();
-                        let is_dns_like = err_msg.contains("dns")
-                            || err_msg.contains("resolve")
-                            || err_msg.contains("no such host")
-                            || err_msg.contains("name or service not known")
-                            || err_msg.contains("nodename nor servname");
-                        if !is_dns_like {
-                            return Err(CurpError::internal(format!(
-                                "QUIC connect error for {addr_str} (non-DNS): {e}"
-                            )));
-                        }
-                    }
+            Err(e) => match self.dns_fallback {
+                DnsFallback::Disabled => Err(CurpError::internal(format!(
+                    "QUIC connect error for {addr_str}: {e}"
+                ))),
+                #[cfg(any(test, feature = "quic-test"))]
+                DnsFallback::LocalhostForTest => {
+                    // Test mode: unconditionally fall back to 127.0.0.1
+                    let (server_name, port_str) =
+                        addr_str.rsplit_once(':').ok_or_else(|| {
+                            CurpError::internal(format!("invalid address format: {addr_str}"))
+                        })?;
+                    let port: u16 = port_str.parse().map_err(|_| {
+                        CurpError::internal(format!("invalid port in address: {addr_str}"))
+                    })?;
+                    let fallback_addr =
+                        std::net::SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), port);
+                    tracing::warn!(
+                        "connect failed for {server_name}:{port} ({e}), \
+                         falling back to {fallback_addr} (test mode)"
+                    );
+                    self.client
+                        .connected_to(server_name, [fallback_addr])
+                        .map_err(|e2| {
+                            CurpError::internal(format!(
+                                "QUIC connect error: {e2} (original: {e})"
+                            ))
+                        })
                 }
-
-                // Test-only fallback: resolve to 127.0.0.1 with original SNI
-                let (server_name, port_str) = addr_str.rsplit_once(':').ok_or_else(|| {
-                    CurpError::internal(format!("invalid address format: {addr_str}"))
-                })?;
-                let port: u16 = port_str.parse().map_err(|_| {
-                    CurpError::internal(format!("invalid port in address: {addr_str}"))
-                })?;
-
-                let fallback_addr =
-                    std::net::SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), port);
-                tracing::warn!(
-                    "DNS lookup failed for {server_name}:{port} ({e}), \
-                     falling back to {fallback_addr} with SNI {server_name} (test mode)"
-                );
-                self.client
-                    .connected_to(server_name, [fallback_addr])
-                    .map_err(|e2| {
-                        CurpError::internal(format!("QUIC connect error: {e2} (DNS: {e})"))
-                    })
-            }
+            },
         }
     }
 
@@ -236,6 +240,7 @@ impl QuicChannel {
             let req_bytes = req.encode_to_vec();
             writer.write_frame(&Frame::Data(req_bytes)).await?;
             writer.write_frame(&Frame::End).await?;
+            writer.flush().await?;
 
             // Shutdown write side
             let mut send_stream: StreamWriter = writer.into_inner();
@@ -303,6 +308,7 @@ impl QuicChannel {
         let req_bytes = req.encode_to_vec();
         writer.write_frame(&Frame::Data(req_bytes)).await?;
         writer.write_frame(&Frame::End).await?;
+        writer.flush().await?;
 
         // Shutdown write side
         let mut send_stream: StreamWriter = writer.into_inner();
@@ -383,6 +389,7 @@ impl QuicChannel {
                 }
                 // Graceful shutdown: write END frame and close the stream
                 let _ = writer.write_frame(&Frame::End).await;
+                let _ = writer.flush().await;
                 let mut send_stream: StreamWriter = writer.into_inner();
                 let _ = send_stream.shutdown().await;
             });
@@ -461,6 +468,7 @@ impl QuicChannel {
     }
 
     /// Connect to a single address with localhost fallback (test only)
+    #[cfg(any(test, feature = "quic-test"))]
     pub async fn connect_single_for_test(
         addr: &str,
         client: Arc<QuicClient>,
@@ -515,6 +523,7 @@ impl QuicChannel {
             writer.write_raw_method_header(raw_method_id, &meta).await?;
             writer.write_frame(&Frame::Data(req_bytes)).await?;
             writer.write_frame(&Frame::End).await?;
+            writer.flush().await?;
 
             let mut send_stream: StreamWriter = writer.into_inner();
             send_stream.shutdown().await

@@ -1211,7 +1211,7 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> CurpNode<C, CE, RC> {
                     Ok(false) => {}
                 },
                 Err(err) => {
-                    warn!("failed to receive snapshot result, {err}");
+                    warn!("failed to receive snapshot result, {err:?}");
                 }
             },
         }
