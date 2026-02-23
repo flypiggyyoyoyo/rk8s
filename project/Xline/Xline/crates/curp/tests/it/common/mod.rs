@@ -2,5 +2,5 @@
 
 pub(crate) mod curp_group;
 
-#[cfg(all(feature = "quic", not(madsim)))]
+#[cfg(feature = "quic")]
 pub(crate) mod quic_group;

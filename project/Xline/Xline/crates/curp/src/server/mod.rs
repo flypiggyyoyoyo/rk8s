@@ -293,7 +293,7 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
     ///
     /// This only creates the `Rpc` instance. To start the QUIC server,
     /// call `QuicGrpcServer::new(rpc).serve(listeners)` separately.
-    #[cfg(all(feature = "quic", not(madsim)))]
+    #[cfg(feature = "quic")]
     #[allow(dead_code)] // Will be used in integration tests
     pub fn new_with_quic(
         cluster_info: Arc<ClusterInfo>,
@@ -331,7 +331,7 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
     /// Create a new `Rpc` with QUIC transport and localhost DNS fallback (test only)
     ///
     /// Same as `new_with_quic` but enables localhost fallback for fake hostnames.
-    #[cfg(all(feature = "quic", not(madsim)))]
+    #[cfg(feature = "quic")]
     #[allow(dead_code)]
     pub fn new_with_quic_for_test(
         cluster_info: Arc<ClusterInfo>,
@@ -425,7 +425,7 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
 
 
 // QUIC transport service trait implementations
-#[cfg(all(feature = "quic", not(madsim)))]
+#[cfg(feature = "quic")]
 mod quic_service_impl {
     use std::sync::Arc;
 

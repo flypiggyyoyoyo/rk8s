@@ -2,5 +2,5 @@ mod common;
 
 mod server;
 
-#[cfg(all(feature = "quic", not(madsim)))]
+#[cfg(feature = "quic")]
 mod quic_rpc;

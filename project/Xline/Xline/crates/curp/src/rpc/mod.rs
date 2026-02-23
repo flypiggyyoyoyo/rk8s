@@ -69,7 +69,7 @@ mod metrics;
 pub(crate) mod connect;
 pub(crate) use connect::{connect, connects, inner_connects};
 
-#[cfg(all(feature = "quic", not(madsim)))]
+#[cfg(feature = "quic")]
 #[allow(unused_imports)]
 pub(crate) use connect::{quic_connect, quic_connects, quic_inner_connects};
 
@@ -82,14 +82,14 @@ pub(crate) mod transport;
 pub(crate) use transport::TransportConfig;
 
 /// QUIC transport implementation
-#[cfg(all(feature = "quic", not(madsim)))]
+#[cfg(feature = "quic")]
 pub(crate) mod quic_transport;
 
-#[cfg(all(feature = "quic", not(madsim)))]
+#[cfg(feature = "quic")]
 pub use quic_transport::{DnsFallback, MethodId, QuicChannel, QuicGrpcServer};
 
 #[doc(hidden)]
-#[cfg(all(feature = "quic", any(test, feature = "quic-test"), not(madsim)))]
+#[cfg(all(feature = "quic", any(test, feature = "quic-test")))]
 pub use quic_transport::ALL_METHOD_IDS;
 
 // ============================================================================

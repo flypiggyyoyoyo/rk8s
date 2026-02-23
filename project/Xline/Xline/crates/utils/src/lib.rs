@@ -358,7 +358,6 @@ impl std::error::Error for QuicAddrError {}
 /// assert_eq!(host, "::1");
 /// assert_eq!(sni, "localhost");
 /// ```
-#[cfg(not(madsim))]
 #[inline]
 pub fn parse_quic_addr(
     addr: &str,
