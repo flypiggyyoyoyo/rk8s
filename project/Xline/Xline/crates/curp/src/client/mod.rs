@@ -21,8 +21,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-#[cfg(madsim)]
-use std::sync::atomic::AtomicU64;
+
 use std::{collections::HashMap, fmt::Debug, ops::Deref, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
@@ -30,11 +29,8 @@ use curp_external_api::cmd::Command;
 use futures::{StreamExt, stream::FuturesUnordered};
 use parking_lot::RwLock;
 use tokio::task::JoinHandle;
-#[cfg(not(madsim))]
 use tonic::transport::ClientTlsConfig;
 use tracing::{debug, warn};
-#[cfg(madsim)]
-use utils::ClientTlsConfig;
 use utils::{build_endpoint, config::ClientConfig};
 
 use self::{
@@ -159,7 +155,7 @@ impl Drop for ProposeIdGuard<'_> {
     }
 }
 
-/// This trait override some unrepeatable methods in ClientApi, and a client with this trait will be able to retry.
+/// This trait override some unrepeatable methods in `ClientApi`, and a client with this trait will be able to retry.
 #[async_trait]
 trait RepeatableClientApi: ClientApi {
     /// Generate a unique propose id during the retry process.
@@ -481,6 +477,7 @@ impl ClientBuilder {
     }
 
     /// Ensures that no server has an empty list of addresses.
+    #[allow(clippy::result_large_err)]
     fn ensure_no_empty_address(
         urls: HashMap<ServerId, Vec<String>>,
     ) -> Result<HashMap<ServerId, Vec<String>>, tonic::Status> {
@@ -548,6 +545,7 @@ impl ClientBuilder {
     ///
     /// Return `tonic::transport::Error` for connection failure.
     #[inline]
+    #[allow(clippy::result_large_err)]
     pub fn build<C: Command>(
         &self,
     ) -> Result<
@@ -564,31 +562,7 @@ impl ClientBuilder {
         Ok(client)
     }
 
-    #[cfg(madsim)]
-    /// Build the client, also returns the current client id
-    ///
-    /// # Errors
-    ///
-    /// Return `tonic::transport::Error` for connection failure.
-    #[inline]
-    #[must_use]
-    pub fn build_with_client_id<C: Command>(
-        &self,
-    ) -> (
-        impl ClientApi<Error = tonic::Status, Cmd = C> + Send + Sync + 'static,
-        Arc<AtomicU64>,
-    ) {
-        let state = Arc::new(self.init_state_builder().build());
 
-        let client = Retry::new(
-            Unary::new(Arc::clone(&state), self.init_unary_config()),
-            self.init_retry_config(),
-            Some(self.spawn_bg_tasks(Arc::clone(&state))),
-        );
-        let client_id = state.clone_client_id();
-
-        (client, client_id)
-    }
 }
 
 impl<P: Protocol> ClientBuilderWithBypass<P> {
@@ -598,6 +572,7 @@ impl<P: Protocol> ClientBuilderWithBypass<P> {
     ///
     /// Return `tonic::transport::Error` for connection failure.
     #[inline]
+    #[allow(clippy::result_large_err)]
     pub fn build<C: Command>(
         self,
     ) -> Result<impl ClientApi<Error = tonic::Status, Cmd = C>, tonic::Status> {

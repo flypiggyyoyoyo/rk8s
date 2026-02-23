@@ -54,7 +54,7 @@ impl Protocol for AuthWrapper {
                 .map_err(|e| tonic::Status::internal(e.to_string()))?;
             command.set_auth_info(auth_info);
             request.get_mut().command = command.encode();
-        };
+        }
         self.curp_server.propose_stream(request).await
     }
 

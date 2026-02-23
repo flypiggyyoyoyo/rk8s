@@ -78,6 +78,7 @@ impl RetryConfig {
 
 impl Backoff {
     /// Get the next delay duration, None means the end.
+    #[allow(clippy::arithmetic_side_effects)]
     fn next_delay(&mut self) -> Option<Duration> {
         if self.count == 0 {
             return None;

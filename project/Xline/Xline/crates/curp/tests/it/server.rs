@@ -13,7 +13,7 @@ use curp_test_utils::{
     test_cmd::{TestCommand, TestCommandResult, TestCommandType},
 };
 use futures::stream::FuturesUnordered;
-use madsim::rand::{Rng, thread_rng};
+use rand::{Rng, thread_rng};
 use test_macros::abort_on_panic;
 use tokio::net::TcpListener;
 use tokio_stream::StreamExt;

@@ -9,11 +9,8 @@ use event_listener::Event;
 use futures::{Future, stream::FuturesUnordered};
 use rand::seq::IteratorRandom;
 use tokio::sync::RwLock;
-#[cfg(not(madsim))]
 use tonic::transport::ClientTlsConfig;
 use tracing::{debug, info};
-#[cfg(madsim)]
-use utils::ClientTlsConfig;
 
 use crate::{
     members::ServerId,

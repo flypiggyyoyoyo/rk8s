@@ -2,12 +2,8 @@ use std::sync::Arc;
 
 use async_stream::stream;
 use clippy_utilities::OverflowArithmetic;
-#[cfg(not(madsim))]
-use tonic::transport::ClientTlsConfig;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use tracing::debug;
-#[cfg(madsim)]
-use utils::ClientTlsConfig;
 use utils::build_endpoint;
 use xlineapi::{
     AuthInfo, EventType,
@@ -247,8 +243,8 @@ impl Lock for LockServer {
 
         let owner_key = owner_res.kvs;
         let header = if owner_key
-            .get(0)
-            .map_or(false, |kv| kv.create_revision == my_rev)
+            .first()
+            .is_some_and(|kv| kv.create_revision == my_rev)
         {
             owner_res.header
         } else {

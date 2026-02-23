@@ -39,7 +39,7 @@ pub(crate) struct KvServer {
     client: Arc<CurpClient>,
     /// Compact events
     compact_events: Arc<DashMap<u64, Arc<Event>>>,
-    /// Next compact_id
+    /// Next `compact_id`
     next_compact_id: AtomicU64,
 }
 
@@ -73,6 +73,7 @@ impl KvServer {
     }
 
     /// serializable execute request in current node
+    #[allow(clippy::result_large_err)]
     fn do_serializable(&self, command: &Command) -> Result<Response, tonic::Status> {
         self.auth_storage
             .check_permission(command.request(), command.auth_info())?;
@@ -129,7 +130,7 @@ impl KvServer {
                     }
                 }
             }
-        };
+        }
     }
 }
 
@@ -185,7 +186,7 @@ impl Kv for KvServer {
         }
     }
 
-    /// DeleteRange deletes the given range from the key-value store.
+    /// `DeleteRange` deletes the given range from the key-value store.
     ///
     /// A delete request increments the revision of the key-value store
     /// and generates a delete event in the event history for every deleted key.

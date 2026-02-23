@@ -36,7 +36,7 @@ pub(super) struct UnaryConfig {
     propose_timeout: Duration,
     /// The rpc timeout of a 2-RTT request, usually takes longer than propose timeout
     ///
-    /// The recommended the values is within (propose_timeout, 2 * propose_timeout].
+    /// The recommended the values is within (`propose_timeout`, 2 * `propose_timeout`).
     wait_synced_timeout: Duration,
 }
 
@@ -306,7 +306,7 @@ impl<C: Command> RepeatableClientApi for Unary<C> {
         let mut client_id = self.state.client_id();
         if client_id == 0 {
             client_id = self.state.wait_for_client_id().await?;
-        };
+        }
         let seq_num = self.new_seq_num();
         Ok(ProposeIdGuard::new(
             &self.tracker,

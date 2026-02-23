@@ -1092,7 +1092,7 @@ impl<C> Eq for PoolEntry<C> {}
 impl<C> PartialOrd for PoolEntry<C> {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.id.cmp(&other.id))
+        Some(self.cmp(other))
     }
 }
 

@@ -93,7 +93,6 @@
     clippy::shadow_unrelated,
     clippy::str_to_string,
     clippy::string_add,
-    clippy::string_to_string,
     clippy::todo,
     clippy::unimplemented,
     clippy::unnecessary_self_imports,
@@ -165,23 +164,8 @@
 
 use std::str::FromStr;
 
-#[cfg(not(madsim))]
 use tonic::transport::ClientTlsConfig;
 use tonic::transport::Endpoint;
-
-/// Fake `ClientTlsConfig` for `madsim`
-#[cfg(madsim)]
-#[derive(Debug, Clone)]
-#[allow(missing_copy_implementations)] // Same as real config
-#[non_exhaustive]
-pub struct ClientTlsConfig;
-
-/// Fake `ServerTlsConfig` for `madsim`
-#[cfg(madsim)]
-#[derive(Debug, Clone)]
-#[allow(missing_copy_implementations)] // Same as real config
-#[non_exhaustive]
-pub struct ServerTlsConfig;
 
 /// Barrier util
 pub mod barrier;
@@ -269,7 +253,6 @@ pub fn build_endpoint(
         Some(_scheme) => Endpoint::from_str(addr)?,
         None => Endpoint::from_shared(format!("http://{addr}"))?,
     };
-    #[cfg(not(madsim))]
     match scheme_str {
         Some("http") | None => {}
         Some("https") => {
@@ -281,7 +264,7 @@ pub fn build_endpoint(
                 return endpoint.tls_config(tls_config.clone());
             }
         }
-    };
+    }
     Ok(endpoint)
 }
 

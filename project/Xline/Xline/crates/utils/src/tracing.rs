@@ -47,10 +47,10 @@ struct InjectMap<'a>(&'a mut tonic::metadata::MetadataMap);
 impl Injector for InjectMap<'_> {
     /// Set a key and value in the `MetadataMap`.  Does nothing if the key or value are not valid inputs
     fn set(&mut self, key: &str, value: String) {
-        if let Ok(key) = tonic::metadata::MetadataKey::from_bytes(key.as_bytes()) {
-            if let Ok(val) = tonic::metadata::MetadataValue::try_from(&value) {
-                let _option = self.0.insert(key, val);
-            }
+        if let Ok(key) = tonic::metadata::MetadataKey::from_bytes(key.as_bytes())
+            && let Ok(val) = tonic::metadata::MetadataValue::try_from(&value)
+        {
+            let _option = self.0.insert(key, val);
         }
     }
 }
@@ -91,6 +91,7 @@ mod test {
 
     use super::*;
     #[tokio::test(flavor = "multi_thread")]
+    #[allow(clippy::unwrap_in_result)]
     async fn test_inject_and_extract() -> Result<(), Box<dyn std::error::Error>> {
         init()?;
         global::set_text_map_propagator(TraceContextPropagator::new());

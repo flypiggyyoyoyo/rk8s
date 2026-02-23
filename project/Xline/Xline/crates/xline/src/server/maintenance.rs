@@ -218,6 +218,7 @@ impl Maintenance for MaintenanceServer {
 }
 
 /// Generate snapshot stream
+#[allow(clippy::result_large_err)]
 fn snapshot_stream(
     header_gen: &HeaderGenerator,
     db: &DB,
@@ -285,6 +286,7 @@ mod test {
 
     #[tokio::test]
     #[abort_on_panic]
+    #[allow(clippy::unwrap_in_result)]
     async fn test_snapshot_stream() -> Result<(), Box<dyn Error>> {
         let dir = TempDir::with_prefix("/tmp/test_snapshot_rpc").unwrap();
         let db_path = dir.path().join("db");

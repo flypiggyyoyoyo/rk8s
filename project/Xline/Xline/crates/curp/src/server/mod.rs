@@ -3,11 +3,8 @@ use std::{fmt::Debug, sync::Arc};
 use engine::SnapshotAllocator;
 use flume::r#async::RecvStream;
 use tokio::sync::broadcast;
-#[cfg(not(madsim))]
 use tonic::transport::ClientTlsConfig;
 use tracing::instrument;
-#[cfg(madsim)]
-use utils::ClientTlsConfig;
 use utils::{config::CurpConfig, task_manager::TaskManager, tracing::Extract};
 
 use self::curp_node::CurpNode;
@@ -410,57 +407,6 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
         }
     }
 
-    /// Run a new rpc server on a specific addr, designed to be used in the tests
-    ///
-    /// # Errors
-    ///
-    /// - `ServerError::ParsingError` if parsing failed for the local server address
-    /// - `ServerError::RpcError` if any rpc related error met
-    #[cfg(madsim)]
-    #[allow(clippy::too_many_arguments)]
-    #[inline]
-    pub async fn run_from_addr(
-        cluster_info: Arc<ClusterInfo>,
-        is_leader: bool,
-        addr: std::net::SocketAddr,
-        executor: Arc<CE>,
-        snapshot_allocator: Box<dyn SnapshotAllocator>,
-        role_change: RC,
-        curp_cfg: Arc<CurpConfig>,
-        storage: Arc<DB<C>>,
-        task_manager: Arc<TaskManager>,
-        client_tls_config: Option<ClientTlsConfig>,
-        sps: Vec<SpObject<C>>,
-        ucps: Vec<UcpObject<C>>,
-    ) -> Result<(), crate::error::ServerError> {
-        use utils::task_manager::tasks::TaskName;
-
-        use crate::rpc::{InnerProtocolServer, ProtocolServer};
-
-        let n = task_manager
-            .get_shutdown_listener(TaskName::TonicServer)
-            .unwrap_or_else(|| unreachable!("cluster should never shutdown before start"));
-        let server = Self::new(
-            cluster_info,
-            is_leader,
-            executor,
-            snapshot_allocator,
-            role_change,
-            curp_cfg,
-            storage,
-            task_manager,
-            client_tls_config,
-            sps,
-            ucps,
-        );
-
-        tonic::transport::Server::builder()
-            .add_service(ProtocolServer::new(server.clone()))
-            .add_service(InnerProtocolServer::new(server))
-            .serve_with_shutdown(addr, n.wait())
-            .await?;
-        Ok(())
-    }
 
     /// Get a subscriber for leader changes
     #[inline]

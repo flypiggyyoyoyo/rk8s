@@ -178,7 +178,7 @@ where
     }
 
     /// Validate the given `watch_id`, return None if the given id is not available, will generate a new one if the given one equals 0
-    fn validate_watch_id(&mut self, watch_id: WatchId) -> Option<WatchId> {
+    fn validate_watch_id(&self, watch_id: WatchId) -> Option<WatchId> {
         // 0 means auto-generate
         if watch_id == 0 {
             loop {
@@ -317,7 +317,7 @@ where
                 }
             }
             response.events = events;
-        };
+        }
 
         if self.response_tx.send(Ok(response)).await.is_err() {
             let _ignore = self.stop_notify.notify(1);
@@ -328,7 +328,7 @@ where
     }
 
     /// Handle progress for request
-    async fn handle_watch_progress(&mut self, _req: WatchProgressRequest) {
+    async fn handle_watch_progress(&self, _req: WatchProgressRequest) {
         if self
             .response_tx
             .send(Ok(WatchResponse {
@@ -441,7 +441,7 @@ mod test {
             && !wr.canceled
             && !wr.created
             && wr.compact_revision == 0
-            && wr.header.as_ref().map_or(false, |h| h.revision != 0)
+            && wr.header.as_ref().is_some_and(|h| h.revision != 0)
     }
 
     fn put(store: &KvStore, key: impl Into<Vec<u8>>, value: impl Into<Vec<u8>>) {
@@ -466,6 +466,7 @@ mod test {
 
     #[tokio::test]
     #[abort_on_panic]
+    #[allow(clippy::unwrap_in_result)]
     async fn test_watch_client_closes_connection() -> Result<(), Box<dyn std::error::Error>> {
         let task_manager = Arc::new(TaskManager::new());
         let (req_tx, req_rx) = mpsc::channel(CHANNEL_SIZE);
@@ -514,6 +515,7 @@ mod test {
     #[tokio::test]
     #[abort_on_panic]
     #[allow(clippy::similar_names)] // use num as suffix
+    #[allow(clippy::unwrap_in_result)]
     async fn test_multi_watch_handle() -> Result<(), Box<dyn std::error::Error>> {
         let task_manager = Arc::new(TaskManager::new());
         let mut mock_watcher = MockKvWatcherOps::new();
@@ -657,6 +659,7 @@ mod test {
 
     #[tokio::test]
     #[abort_on_panic]
+    #[allow(clippy::unwrap_in_result)]
     async fn test_watch_progress() -> Result<(), Box<dyn std::error::Error>> {
         let task_manager = Arc::new(TaskManager::new());
         let (req_tx, req_rx) = mpsc::channel(CHANNEL_SIZE);
@@ -719,6 +722,7 @@ mod test {
     }
 
     #[tokio::test]
+    #[allow(clippy::unwrap_in_result)]
     async fn watch_task_should_terminate_when_response_tx_closed()
     -> Result<(), Box<dyn std::error::Error>> {
         let task_manager = Arc::new(TaskManager::new());
