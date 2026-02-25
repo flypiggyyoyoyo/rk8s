@@ -911,7 +911,6 @@ fn install_snapshot_stream(
 // QUIC transport implementations
 // ============================================================================
 
-#[cfg(feature = "quic")]
 #[allow(dead_code, unused_results)]
 mod quic_connect_impl {
     use std::{
@@ -1266,7 +1265,6 @@ mod quic_connect_impl {
     }
 }
 
-#[cfg(feature = "quic")]
 #[allow(unused_imports)]
 pub(crate) use quic_connect_impl::{
     QuicConnect, QuicInnerConnect, quic_connect, quic_connects, quic_inner_connects,

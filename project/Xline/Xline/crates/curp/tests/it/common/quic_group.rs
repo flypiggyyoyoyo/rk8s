@@ -170,7 +170,7 @@ impl QuicCurpGroup {
                 Box::<MemorySnapshotAllocator>::default() as Box<dyn engine::SnapshotAllocator>;
             let cluster_info = Arc::new(ClusterInfo::from_members_map(
                 all_members_addrs.clone(),
-                [],
+                &[],
                 name,
             ));
             let id = cluster_info.self_id();

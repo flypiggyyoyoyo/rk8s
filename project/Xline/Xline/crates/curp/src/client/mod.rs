@@ -292,7 +292,6 @@ impl ClientBuilder {
     }
 
     /// Use QUIC transport (default is tonic gRPC)
-    #[cfg(feature = "quic")]
     #[inline]
     #[must_use]
     pub fn quic_transport(mut self, quic_client: Arc<gm_quic::prelude::QuicClient>) -> Self {
@@ -308,7 +307,7 @@ impl ClientBuilder {
     /// When DNS resolution fails for a hostname, falls back to 127.0.0.1
     /// with the original hostname as SNI. Only use this for testing with
     /// fake hostnames like "s0.test".
-    #[cfg(all(feature = "quic", any(test, feature = "quic-test")))]
+    #[doc(hidden)]
     #[inline]
     #[must_use]
     pub fn quic_transport_for_test(
@@ -329,9 +328,8 @@ impl ClientBuilder {
     /// Return `Status` for connection failure or some server errors.
     #[inline]
     pub async fn discover_from(mut self, addrs: Vec<String>) -> Result<Self, Status> {
-        #[cfg(feature = "quic")]
         if matches!(self.transport, crate::rpc::TransportConfig::Quic(..)) {
-            return Err(tonic::Status::internal(
+            return Err(Status::internal(
                 "discover_from uses tonic transport; use quic_discover_from for QUIC",
             ));
         }
@@ -406,7 +404,6 @@ impl ClientBuilder {
     /// # Errors
     ///
     /// Return `CurpError` for connection failure or some server errors.
-    #[cfg(feature = "quic")]
     #[inline]
     pub async fn quic_discover_from(
         mut self,
@@ -433,7 +430,6 @@ impl ClientBuilder {
                 let addr = addr.clone();
                 async move {
                     let channel = match dns_fallback {
-                        #[cfg(any(test, feature = "quic-test"))]
                         crate::rpc::quic_transport::channel::DnsFallback::LocalhostForTest => {
                             QuicChannel::connect_single_for_test(&addr, client).await?
                         }
@@ -476,7 +472,6 @@ impl ClientBuilder {
     }
 
     /// Ensures that no server has an empty list of addresses (QUIC variant)
-    #[cfg(feature = "quic")]
     fn quic_ensure_no_empty_address(
         urls: HashMap<ServerId, Vec<String>>,
     ) -> Result<HashMap<ServerId, Vec<String>>, crate::rpc::CurpError> {

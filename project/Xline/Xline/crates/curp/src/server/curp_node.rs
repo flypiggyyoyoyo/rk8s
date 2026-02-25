@@ -855,7 +855,6 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> CurpNode<C, CE, RC> {
                 rpc::inner_connects(cluster_info.peers_addrs(), client_tls_config.as_ref())
                     .collect()
             }
-            #[cfg(feature = "quic")]
             rpc::TransportConfig::Quic(ref client, dns_fallback) => {
                 rpc::quic_inner_connects(cluster_info.peers_addrs(), client, dns_fallback).collect()
             }

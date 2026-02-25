@@ -1,13 +1,11 @@
 use std::{collections::HashMap, sync::Arc};
 
-#[cfg(feature = "quic")]
 use async_trait::async_trait;
 use curp_external_api::{
     InflightId,
     cmd::{ConflictCheck, PbCodec, PbSerializeError},
     conflict::EntryId,
 };
-#[cfg(feature = "quic")]
 use futures::Stream;
 use prost::Message;
 use serde::{Deserialize, Serialize};
@@ -73,7 +71,6 @@ mod metrics;
 pub(crate) mod connect;
 pub(crate) use connect::{connect, connects, inner_connects};
 
-#[cfg(feature = "quic")]
 #[allow(unused_imports)]
 pub(crate) use connect::{quic_connect, quic_connects, quic_inner_connects};
 
@@ -86,14 +83,11 @@ pub(crate) mod transport;
 pub(crate) use transport::TransportConfig;
 
 /// QUIC transport implementation
-#[cfg(feature = "quic")]
 pub(crate) mod quic_transport;
 
-#[cfg(feature = "quic")]
 pub use quic_transport::{DnsFallback, MethodId, QuicChannel, QuicGrpcServer};
 
 #[doc(hidden)]
-#[cfg(all(feature = "quic", any(test, feature = "quic-test")))]
 pub use quic_transport::ALL_METHOD_IDS;
 
 // ============================================================================
@@ -111,14 +105,12 @@ pub use quic_transport::ALL_METHOD_IDS;
 /// Client side: inject tracing context into Metadata, then serialize to QUIC frame header.
 /// Server side: rebuild `tonic::metadata::MetadataMap` from Metadata for `extract_span()`,
 ///              and directly read bypass/token.
-#[cfg(feature = "quic")]
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Metadata {
     /// Key-value pairs
     pairs: Vec<(String, String)>,
 }
 
-#[cfg(feature = "quic")]
 impl Metadata {
     /// Create a new empty metadata
     #[inline]
@@ -192,7 +184,6 @@ impl Metadata {
 ///
 /// This trait abstracts the RPC methods so that both tonic and QUIC
 /// implementations can be used interchangeably by the dispatcher.
-#[cfg(feature = "quic")]
 #[async_trait]
 pub(crate) trait CurpService: Send + Sync + 'static {
     /// Handle propose stream request
@@ -247,7 +238,6 @@ pub(crate) trait CurpService: Send + Sync + 'static {
 /// Transport-agnostic service trait for internal protocol
 ///
 /// This trait abstracts the internal RPC methods used for Raft consensus.
-#[cfg(feature = "quic")]
 #[async_trait]
 pub(crate) trait InnerCurpService: Send + Sync + 'static {
     /// Handle append entries request
