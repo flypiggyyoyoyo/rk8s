@@ -16,7 +16,6 @@ pub(crate) use self::proto::{
         AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
         InstallSnapshotResponse, TriggerShutdownRequest, TriggerShutdownResponse,
         TryBecomeLeaderNowRequest, TryBecomeLeaderNowResponse, VoteRequest, VoteResponse,
-        inner_protocol_server::InnerProtocol,
     },
 };
 pub use self::proto::{
@@ -67,18 +66,12 @@ mod metrics;
 
 /// Rpc connect
 pub(crate) mod connect;
-pub(crate) use connect::{connect, connects, inner_connects};
-
-#[allow(unused_imports)]
 pub(crate) use connect::{quic_connect, quic_connects, quic_inner_connects};
-
-/// Auto reconnect connection
-mod reconnect;
 
 /// Transport configuration
 pub(crate) mod transport;
 #[allow(unused_imports)]
-pub(crate) use transport::TransportConfig;
+pub use transport::TransportConfig;
 
 /// QUIC transport implementation
 pub(crate) mod quic_transport;
@@ -161,8 +154,9 @@ impl Metadata {
 
     /// Build from `tonic::metadata::MetadataMap`
     ///
-    /// Used by tonic Protocol adapter impls to convert incoming request metadata
-    /// into the transport-agnostic `Metadata` type before delegating to `CurpService`.
+    /// Used by tonic Protocol adapter impls (e.g. AuthWrapper in xline crate)
+    /// to convert incoming request metadata into the transport-agnostic `Metadata`
+    /// type before delegating to `CurpService`.
     #[inline]
     pub fn from_tonic_metadata(map: &tonic::metadata::MetadataMap) -> Self {
         let pairs = map
@@ -178,7 +172,6 @@ impl Metadata {
             .collect();
         Self { pairs }
     }
-
 }
 
 // ============================================================================
@@ -997,20 +990,6 @@ impl<E: std::error::Error + 'static> From<E> for CurpError {
                 };
             }
         }
-        // Temporary: also handle tonic::Status while tonic transport code still exists
-        if let Some(status) = err.downcast_ref::<tonic::Status>() {
-            if status.code() == tonic::Code::Unavailable {
-                return Self::RpcTransport(());
-            }
-            if !status.details().is_empty() {
-                return match CurpErrorWrapper::decode(status.details()) {
-                    Ok(e) => e
-                        .err
-                        .unwrap_or_else(|| unreachable!("err must be set in CurpErrorWrapper")),
-                    Err(dec_err) => Self::internal(dec_err.to_string()),
-                };
-            }
-        }
         // Errors that are not created manually by `CurpError::xxx()` are trivial,
         // and errors that need to be known to the client are best created manually.
         Self::internal(value.to_string())
@@ -1082,13 +1061,14 @@ impl From<CurpError> for Status {
     }
 }
 
-/// Temporary bridge: CurpError → tonic::Status via xlinerpc::Status
-/// This exists only while tonic Protocol/InnerProtocol impls remain (Phase 3 will remove them).
+/// Bridge: CurpError → tonic::Status via xlinerpc::Status
+///
+/// Needed by xline crate's tonic Protocol adapter (AuthWrapper) which still
+/// serves client-facing curp protocol over tonic gRPC.
 impl From<CurpError> for tonic::Status {
     #[inline]
     fn from(err: CurpError) -> Self {
         let xlinerpc_status: Status = err.into();
-        // Convert xlinerpc::Status → tonic::Status
         let code = tonic::Code::from(i32::from(xlinerpc_status.code()));
         let details = xlinerpc_status.details();
         if details.is_empty() {
@@ -1103,7 +1083,7 @@ impl From<CurpError> for tonic::Status {
     }
 }
 
-// User defined types
+/// User defined types
 
 /// Entry of speculative pool
 #[derive(Debug, Serialize, Deserialize)]

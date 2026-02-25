@@ -45,6 +45,13 @@ impl From<Status> for XlineClientBuildError {
     }
 }
 
+impl From<curp::rpc::CurpError> for XlineClientBuildError {
+    #[inline]
+    fn from(e: curp::rpc::CurpError) -> Self {
+        Self::RpcError(format!("{e:?}"))
+    }
+}
+
 /// The error type for `xline-client`
 #[derive(Error, Debug)]
 #[non_exhaustive]

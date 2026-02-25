@@ -188,7 +188,7 @@ impl QuicCurpGroup {
             let role_change_arc = role_change_cb.get_inner_arc();
             let curp_storage = Arc::new(DB::open(&config.engine_cfg).unwrap());
 
-            let rpc = Rpc::new_with_quic_for_test(
+            let rpc = Rpc::new_for_test(
                 cluster_info,
                 name == leader_name,
                 ce,
@@ -197,7 +197,6 @@ impl QuicCurpGroup {
                 config,
                 curp_storage,
                 Arc::clone(&task_manager),
-                None,
                 vec![Box::<TestSpecPool>::default()],
                 vec![Box::<TestUncomPool>::default()],
                 Arc::clone(&quic_client),

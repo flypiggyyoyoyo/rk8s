@@ -1,32 +1,18 @@
-use std::{fmt::Debug, pin::Pin, sync::Arc};
+use std::{fmt::Debug, sync::Arc};
 
 use engine::SnapshotAllocator;
-use futures::StreamExt;
 use tokio::sync::broadcast;
-use tonic::transport::ClientTlsConfig;
-use tracing::instrument;
 use utils::{config::CurpConfig, task_manager::TaskManager};
 use self::curp_node::CurpNode;
 pub use self::{
     conflict::{spec_pool_new::SpObject, uncommitted_pool::UcpObject},
     raw_curp::RawCurp,
 };
-use crate::rpc::{OpResponse, RecordRequest, RecordResponse};
 use crate::{
     cmd::{Command, CommandExecutor},
     members::{ClusterInfo, ServerId},
     role_change::RoleChange,
-    rpc::{
-        AppendEntriesRequest, AppendEntriesResponse, FetchClusterRequest, FetchClusterResponse,
-        FetchReadStateRequest, FetchReadStateResponse, InstallSnapshotRequest,
-        InstallSnapshotResponse, LeaseKeepAliveMsg, MoveLeaderRequest, MoveLeaderResponse,
-        ProposeConfChangeRequest, ProposeConfChangeResponse, ProposeRequest, PublishRequest,
-        PublishResponse, ShutdownRequest, ShutdownResponse, TriggerShutdownRequest,
-        TriggerShutdownResponse, TryBecomeLeaderNowRequest, TryBecomeLeaderNowResponse,
-        VoteRequest, VoteResponse,
-    },
 };
-use crate::rpc::{ReadIndexRequest, ReadIndexResponse};
 
 /// Command worker to do execution and after sync
 mod cmd_worker;
@@ -76,217 +62,14 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Clone for Rpc<C, CE, RC
 }
 
 // ============================================================================
-// Tonic Protocol/InnerProtocol adapter impls
-//
-// These delegate to CurpService/InnerCurpService and will be removed in Phase 4
-// when xline migrates to QuicGrpcServer.
-// ============================================================================
-
-#[tonic::async_trait]
-impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> crate::rpc::Protocol for Rpc<C, CE, RC> {
-    type ProposeStreamStream = Pin<Box<dyn futures::Stream<Item = Result<OpResponse, tonic::Status>> + Send>>;
-
-    #[instrument(skip_all, name = "propose_stream")]
-    async fn propose_stream(
-        &self,
-        request: tonic::Request<ProposeRequest>,
-    ) -> Result<tonic::Response<Self::ProposeStreamStream>, tonic::Status> {
-        let meta = crate::rpc::Metadata::from_tonic_metadata(request.metadata());
-        let req = request.into_inner();
-        let stream = crate::rpc::CurpService::propose_stream(self, req, meta)
-            .await
-            .map_err(tonic::Status::from)?;
-        let mapped = stream.map(|r| r.map_err(tonic::Status::from));
-        Ok(tonic::Response::new(Box::pin(mapped)))
-    }
-
-    #[instrument(skip_all, name = "record")]
-    async fn record(
-        &self,
-        request: tonic::Request<RecordRequest>,
-    ) -> Result<tonic::Response<RecordResponse>, tonic::Status> {
-        let meta = crate::rpc::Metadata::from_tonic_metadata(request.metadata());
-        Ok(tonic::Response::new(
-            crate::rpc::CurpService::record(self, request.into_inner(), meta)
-                .map_err(tonic::Status::from)?,
-        ))
-    }
-
-    #[instrument(skip_all, name = "read_index")]
-    async fn read_index(
-        &self,
-        request: tonic::Request<ReadIndexRequest>,
-    ) -> Result<tonic::Response<ReadIndexResponse>, tonic::Status> {
-        let meta = crate::rpc::Metadata::from_tonic_metadata(request.metadata());
-        Ok(tonic::Response::new(
-            crate::rpc::CurpService::read_index(self, meta)
-                .map_err(tonic::Status::from)?,
-        ))
-    }
-
-    #[instrument(skip_all, name = "curp_shutdown")]
-    async fn shutdown(
-        &self,
-        request: tonic::Request<ShutdownRequest>,
-    ) -> Result<tonic::Response<ShutdownResponse>, tonic::Status> {
-        let meta = crate::rpc::Metadata::from_tonic_metadata(request.metadata());
-        Ok(tonic::Response::new(
-            crate::rpc::CurpService::shutdown(self, request.into_inner(), meta)
-                .await
-                .map_err(tonic::Status::from)?,
-        ))
-    }
-
-    #[instrument(skip_all, name = "curp_propose_conf_change")]
-    async fn propose_conf_change(
-        &self,
-        request: tonic::Request<ProposeConfChangeRequest>,
-    ) -> Result<tonic::Response<ProposeConfChangeResponse>, tonic::Status> {
-        let meta = crate::rpc::Metadata::from_tonic_metadata(request.metadata());
-        Ok(tonic::Response::new(
-            crate::rpc::CurpService::propose_conf_change(self, request.into_inner(), meta)
-                .await
-                .map_err(tonic::Status::from)?,
-        ))
-    }
-
-    #[instrument(skip_all, name = "curp_publish")]
-    async fn publish(
-        &self,
-        request: tonic::Request<PublishRequest>,
-    ) -> Result<tonic::Response<PublishResponse>, tonic::Status> {
-        let meta = crate::rpc::Metadata::from_tonic_metadata(request.metadata());
-        Ok(tonic::Response::new(
-            crate::rpc::CurpService::publish(self, request.into_inner(), meta)
-                .map_err(tonic::Status::from)?,
-        ))
-    }
-
-    #[instrument(skip_all, name = "curp_fetch_cluster")]
-    async fn fetch_cluster(
-        &self,
-        request: tonic::Request<FetchClusterRequest>,
-    ) -> Result<tonic::Response<FetchClusterResponse>, tonic::Status> {
-        Ok(tonic::Response::new(
-            crate::rpc::CurpService::fetch_cluster(self, request.into_inner())
-                .map_err(tonic::Status::from)?,
-        ))
-    }
-
-    #[instrument(skip_all, name = "curp_fetch_read_state")]
-    async fn fetch_read_state(
-        &self,
-        request: tonic::Request<FetchReadStateRequest>,
-    ) -> Result<tonic::Response<FetchReadStateResponse>, tonic::Status> {
-        Ok(tonic::Response::new(
-            crate::rpc::CurpService::fetch_read_state(self, request.into_inner())
-                .map_err(tonic::Status::from)?,
-        ))
-    }
-
-    #[instrument(skip_all, name = "curp_move_leader")]
-    async fn move_leader(
-        &self,
-        request: tonic::Request<MoveLeaderRequest>,
-    ) -> Result<tonic::Response<MoveLeaderResponse>, tonic::Status> {
-        Ok(tonic::Response::new(
-            crate::rpc::CurpService::move_leader(self, request.into_inner())
-                .await
-                .map_err(tonic::Status::from)?,
-        ))
-    }
-
-    #[instrument(skip_all, name = "lease_keep_alive")]
-    async fn lease_keep_alive(
-        &self,
-        request: tonic::Request<tonic::Streaming<LeaseKeepAliveMsg>>,
-    ) -> Result<tonic::Response<LeaseKeepAliveMsg>, tonic::Status> {
-        let stream = request.into_inner();
-        let curp_stream: Box<dyn futures::Stream<Item = Result<LeaseKeepAliveMsg, crate::rpc::CurpError>> + Send + Unpin> =
-            Box::new(stream.map(|r| r.map_err(crate::rpc::CurpError::from)));
-        Ok(tonic::Response::new(
-            crate::rpc::CurpService::lease_keep_alive(self, curp_stream)
-                .await
-                .map_err(tonic::Status::from)?,
-        ))
-    }
-}
-
-#[tonic::async_trait]
-impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> crate::rpc::InnerProtocol
-    for Rpc<C, CE, RC>
-{
-    #[instrument(skip_all, name = "curp_append_entries")]
-    async fn append_entries(
-        &self,
-        request: tonic::Request<AppendEntriesRequest>,
-    ) -> Result<tonic::Response<AppendEntriesResponse>, tonic::Status> {
-        Ok(tonic::Response::new(
-            crate::rpc::InnerCurpService::append_entries(self, request.into_inner())
-                .map_err(tonic::Status::from)?,
-        ))
-    }
-
-    #[instrument(skip_all, name = "curp_vote")]
-    async fn vote(
-        &self,
-        request: tonic::Request<VoteRequest>,
-    ) -> Result<tonic::Response<VoteResponse>, tonic::Status> {
-        Ok(tonic::Response::new(
-            crate::rpc::InnerCurpService::vote(self, request.into_inner())
-                .map_err(tonic::Status::from)?,
-        ))
-    }
-
-    #[instrument(skip_all, name = "curp_trigger_shutdown")]
-    async fn trigger_shutdown(
-        &self,
-        _request: tonic::Request<TriggerShutdownRequest>,
-    ) -> Result<tonic::Response<TriggerShutdownResponse>, tonic::Status> {
-        crate::rpc::InnerCurpService::trigger_shutdown(self)
-            .map_err(tonic::Status::from)?;
-        Ok(tonic::Response::new(TriggerShutdownResponse {}))
-    }
-
-    #[instrument(skip_all, name = "curp_install_snapshot")]
-    async fn install_snapshot(
-        &self,
-        request: tonic::Request<tonic::Streaming<InstallSnapshotRequest>>,
-    ) -> Result<tonic::Response<InstallSnapshotResponse>, tonic::Status> {
-        let stream = request.into_inner();
-        let curp_stream: Box<dyn futures::Stream<Item = Result<InstallSnapshotRequest, crate::rpc::CurpError>> + Send + Unpin> =
-            Box::new(stream.map(|r| r.map_err(crate::rpc::CurpError::from)));
-        Ok(tonic::Response::new(
-            crate::rpc::InnerCurpService::install_snapshot(self, curp_stream)
-                .await
-                .map_err(tonic::Status::from)?,
-        ))
-    }
-
-    #[instrument(skip_all, name = "curp_try_become_leader_now")]
-    async fn try_become_leader_now(
-        &self,
-        _request: tonic::Request<TryBecomeLeaderNowRequest>,
-    ) -> Result<tonic::Response<TryBecomeLeaderNowResponse>, tonic::Status> {
-        crate::rpc::InnerCurpService::try_become_leader_now(self)
-            .await
-            .map_err(tonic::Status::from)?;
-        Ok(tonic::Response::new(TryBecomeLeaderNowResponse {}))
-    }
-}
-
-// ============================================================================
 // Rpc constructors and methods
 // ============================================================================
 
 impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
-    /// New `Rpc`
+    /// Create a new `Rpc` with QUIC transport
     ///
-    /// # Panics
-    ///
-    /// Panic if storage creation failed
-    #[inline]
-    #[allow(clippy::too_many_arguments)] // TODO: refactor this use builder pattern
+    /// This only creates the `Rpc` instance. To start the QUIC server,
+    /// call `QuicGrpcServer::new(rpc).serve(listeners)` separately.
     pub fn new(
         cluster_info: Arc<ClusterInfo>,
         is_leader: bool,
@@ -296,41 +79,6 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
         curp_cfg: Arc<CurpConfig>,
         storage: Arc<DB<C>>,
         task_manager: Arc<TaskManager>,
-        client_tls_config: Option<ClientTlsConfig>,
-        sps: Vec<SpObject<C>>,
-        ucps: Vec<UcpObject<C>>,
-    ) -> Self {
-        Self::new_inner(
-            cluster_info,
-            is_leader,
-            executor,
-            snapshot_allocator,
-            role_change,
-            curp_cfg,
-            storage,
-            task_manager,
-            client_tls_config,
-            sps,
-            ucps,
-            crate::rpc::TransportConfig::default(),
-        )
-    }
-
-    /// Create a new `Rpc` with QUIC transport
-    ///
-    /// This only creates the `Rpc` instance. To start the QUIC server,
-    /// call `QuicGrpcServer::new(rpc).serve(listeners)` separately.
-    #[allow(dead_code)] // Will be used in integration tests
-    pub fn new_with_quic(
-        cluster_info: Arc<ClusterInfo>,
-        is_leader: bool,
-        executor: Arc<CE>,
-        snapshot_allocator: Box<dyn SnapshotAllocator>,
-        role_change: RC,
-        curp_cfg: Arc<CurpConfig>,
-        storage: Arc<DB<C>>,
-        task_manager: Arc<TaskManager>,
-        client_tls_config: Option<ClientTlsConfig>,
         sps: Vec<SpObject<C>>,
         ucps: Vec<UcpObject<C>>,
         quic_client: Arc<gm_quic::prelude::QuicClient>,
@@ -344,22 +92,20 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
             curp_cfg,
             storage,
             task_manager,
-            client_tls_config,
             sps,
             ucps,
-            crate::rpc::TransportConfig::Quic(
-                quic_client,
-                crate::rpc::quic_transport::channel::DnsFallback::Disabled,
-            ),
+            crate::rpc::TransportConfig {
+                client: quic_client,
+                dns_fallback: crate::rpc::quic_transport::channel::DnsFallback::Disabled,
+            },
         )
     }
 
     /// Create a new `Rpc` with QUIC transport and localhost DNS fallback (test only)
     ///
-    /// Same as `new_with_quic` but enables localhost fallback for fake hostnames.
+    /// Same as `new` but enables localhost fallback for fake hostnames.
     #[doc(hidden)]
-    #[allow(dead_code)]
-    pub fn new_with_quic_for_test(
+    pub fn new_for_test(
         cluster_info: Arc<ClusterInfo>,
         is_leader: bool,
         executor: Arc<CE>,
@@ -368,7 +114,6 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
         curp_cfg: Arc<CurpConfig>,
         storage: Arc<DB<C>>,
         task_manager: Arc<TaskManager>,
-        client_tls_config: Option<ClientTlsConfig>,
         sps: Vec<SpObject<C>>,
         ucps: Vec<UcpObject<C>>,
         quic_client: Arc<gm_quic::prelude::QuicClient>,
@@ -382,13 +127,12 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
             curp_cfg,
             storage,
             task_manager,
-            client_tls_config,
             sps,
             ucps,
-            crate::rpc::TransportConfig::Quic(
-                quic_client,
-                crate::rpc::quic_transport::channel::DnsFallback::LocalhostForTest,
-            ),
+            crate::rpc::TransportConfig {
+                client: quic_client,
+                dns_fallback: crate::rpc::quic_transport::channel::DnsFallback::LocalhostForTest,
+            },
         )
     }
 
@@ -402,7 +146,6 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
         curp_cfg: Arc<CurpConfig>,
         storage: Arc<DB<C>>,
         task_manager: Arc<TaskManager>,
-        client_tls_config: Option<ClientTlsConfig>,
         sps: Vec<SpObject<C>>,
         ucps: Vec<UcpObject<C>>,
         transport: crate::rpc::TransportConfig,
@@ -417,7 +160,6 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
             curp_cfg,
             storage,
             task_manager,
-            client_tls_config,
             sps,
             ucps,
             transport,

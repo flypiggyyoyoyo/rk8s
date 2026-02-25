@@ -7,7 +7,7 @@ use clippy_utilities::{NumericCast, OverflowArithmetic};
 use curp::{
     client::ClientBuilder as CurpClientBuilder,
     members::{ClusterInfo, get_cluster_info_from_remote},
-    rpc::{InnerProtocolServer, ProtocolServer},
+    rpc::{ProtocolServer, QuicGrpcServer, TransportConfig},
     server::{DB as CurpDB, Rpc, StorageApi as _},
 };
 use dashmap::DashMap;
@@ -68,7 +68,6 @@ use crate::{
 pub(crate) type CurpServer = Rpc<Command, CommandExecutor, State<Arc<CurpClient>>>;
 
 /// Xline server
-#[derive(Debug)]
 pub struct XlineServer {
     /// Cluster information
     cluster_info: Arc<ClusterInfo>,
@@ -80,14 +79,29 @@ pub struct XlineServer {
     compact_config: CompactConfig,
     /// Auth config
     auth_config: AuthConfig,
-    /// Client tls config
+    /// Client tls config (for tonic xline services)
     client_tls_config: Option<ClientTlsConfig>,
-    /// Server tls config
+    /// Server tls config (for tonic xline services)
     server_tls_config: Option<ServerTlsConfig>,
+    /// QUIC client for curp peer communication
+    quic_client: Arc<gm_quic::prelude::QuicClient>,
     /// Task Manager
     task_manager: Arc<TaskManager>,
     /// Curp storage
     curp_storage: Arc<CurpDB<Command>>,
+}
+
+impl std::fmt::Debug for XlineServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("XlineServer")
+            .field("cluster_info", &self.cluster_info)
+            .field("cluster_config", &self.cluster_config)
+            .field("storage_config", &self.storage_config)
+            .field("compact_config", &self.compact_config)
+            .field("auth_config", &self.auth_config)
+            .field("quic_client", &"QuicClient(..)")
+            .finish()
+    }
 }
 
 impl XlineServer {
@@ -106,11 +120,25 @@ impl XlineServer {
     ) -> Result<Self> {
         let (client_tls_config, server_tls_config) = Self::read_tls_config(&tls_config).await?;
         let curp_storage = Arc::new(CurpDB::open(&cluster_config.curp_config().engine_cfg)?);
+
+        // Build QUIC client for curp peer communication
+        // TODO: configure TLS root certs from tls_config when QUIC TLS is fully integrated
+        let quic_client = Arc::new(
+            gm_quic::prelude::QuicClient::builder()
+                .with_root_certificates(rustls::RootCertStore::empty())
+                .without_cert()
+                .build(),
+        );
+        let transport = TransportConfig {
+            client: Arc::clone(&quic_client),
+            dns_fallback: curp::rpc::DnsFallback::Disabled,
+        };
+
         let cluster_info = Arc::new(
             Self::init_cluster_info(
                 &cluster_config,
                 curp_storage.as_ref(),
-                client_tls_config.as_ref(),
+                &transport,
             )
             .await?,
         );
@@ -122,6 +150,7 @@ impl XlineServer {
             auth_config,
             client_tls_config,
             server_tls_config,
+            quic_client,
             task_manager: Arc::new(TaskManager::new()),
             curp_storage,
         })
@@ -131,7 +160,7 @@ impl XlineServer {
     async fn init_cluster_info(
         cluster_config: &ClusterConfig,
         curp_storage: &CurpDB<Command>,
-        tls_config: Option<&ClientTlsConfig>,
+        transport: &TransportConfig,
     ) -> Result<ClusterInfo> {
         info!("name = {:?}", cluster_config.name());
         info!("cluster_peers = {:?}", cluster_config.peers());
@@ -162,7 +191,7 @@ impl XlineServer {
                     &self_peer_urls,
                     cluster_config.name(),
                     *cluster_config.client_config().wait_synced_timeout(),
-                    tls_config,
+                    transport,
                 )
                 .await
                 .ok_or_else(|| anyhow!("Failed to get cluster info from remote"))?;
@@ -284,7 +313,7 @@ impl XlineServer {
         &self,
         db: Arc<DB>,
         key_pair: Option<(EncodingKey, DecodingKey)>,
-    ) -> Result<(Router, Router, Arc<CurpClient>)> {
+    ) -> Result<(Router, QuicGrpcServer<Command, CommandExecutor, State<Arc<CurpClient>>>, Arc<CurpClient>)> {
         let (
             kv_server,
             lock_server,
@@ -303,7 +332,6 @@ impl XlineServer {
             builder = builder.tls_config(cfg.clone())?;
         }
         let xline_router = builder
-            .clone()
             .add_service(RpcLockServer::new(lock_server))
             .add_service(RpcKvServer::new(kv_server))
             .add_service(RpcLeaseServer::from_arc(lease_server))
@@ -312,9 +340,9 @@ impl XlineServer {
             .add_service(RpcMaintenanceServer::new(maintenance_server))
             .add_service(RpcClusterServer::new(cluster_server))
             .add_service(ProtocolServer::new(auth_wrapper));
-        let curp_router = builder
-            .add_service(ProtocolServer::new(curp_server.clone()))
-            .add_service(InnerProtocolServer::new(curp_server));
+
+        // Curp peer communication uses QUIC
+        let quic_server = QuicGrpcServer::new(curp_server);
 
         let xline_router = {
             let (mut reporter, health_server) = tonic_health::server::health_reporter();
@@ -323,7 +351,7 @@ impl XlineServer {
                 .await;
             xline_router.add_service(health_server)
         };
-        Ok((xline_router, curp_router, curp_client))
+        Ok((xline_router, quic_server, curp_client))
     }
 
     /// Start `XlineServer`
@@ -333,25 +361,65 @@ impl XlineServer {
     /// Will return `Err` when `tonic::Server` serve return an error
     #[inline]
     /// inner start method shared by `start` and `start_from_listener`
-    async fn start_inner<I1, I2, IO, IE>(&self, xline_incoming: I1, curp_incoming: I2) -> Result<()>
+    async fn start_inner<I1, IO, IE>(&self, xline_incoming: I1) -> Result<()>
     where
         I1: Stream<Item = Result<IO, IE>> + Send + 'static,
-        I2: Stream<Item = Result<IO, IE>> + Send + 'static,
         IO: AsyncRead + AsyncWrite + Connected + Unpin + Send + 'static,
         IO::ConnectInfo: Clone + Send + Sync + 'static,
         IE: Into<Box<dyn std::error::Error + Send + Sync>> + Send,
     {
         let db = DB::open(&self.storage_config.engine)?;
         let key_pair = Self::read_key_pair(&self.auth_config).await?;
-        let (xline_router, curp_router, curp_client) = self.init_router(db, key_pair).await?;
+        let (xline_router, quic_server, curp_client) = self.init_router(db, key_pair).await?;
+
+        // Start tonic server for xline client-facing services
         self.task_manager
             .spawn(TaskName::TonicServer, |n1| async move {
-                let n2 = n1.clone();
-                tokio::select! {
-                    _ = xline_router.serve_with_incoming_shutdown(xline_incoming, n1.wait()) => {},
-                    _ = curp_router.serve_with_incoming_shutdown(curp_incoming, n2.wait()) => {},
+                let _ig = xline_router.serve_with_incoming_shutdown(xline_incoming, n1.wait()).await;
+            });
+
+        // Start QUIC server for curp peer communication
+        let peer_listen_urls = self.cluster_config.peer_listen_urls().clone();
+        let self_name = self.cluster_info.self_name();
+        self.task_manager
+            .spawn(TaskName::TonicServer, |_n| async move {
+                // Build QUIC listeners
+                // TODO: integrate with server_tls_config for production TLS
+                let listeners = gm_quic::prelude::QuicListeners::builder()
+                    .expect("QuicListeners::builder")
+                    .without_client_cert_verifier()
+                    .listen(64);
+
+                // Generate a self-signed cert for this node
+                let key = rcgen::KeyPair::generate().expect("generate key");
+                let params = rcgen::CertificateParams::new(vec![self_name.clone()])
+                    .expect("cert params");
+                let cert = params.self_signed(&key).expect("self-sign cert");
+
+                for url in &peer_listen_urls {
+                    let addr = url
+                        .strip_prefix("http://")
+                        .or_else(|| url.strip_prefix("https://"))
+                        .unwrap_or(url);
+                    let bind_uri: gm_quic::qbase::net::addr::BindUri = format!("inet://{addr}")
+                        .parse()
+                        .unwrap_or_else(|e| panic!("invalid peer listen url {addr}: {e}"));
+                    listeners
+                        .add_server(
+                            &self_name,
+                            cert.der().as_ref(),
+                            key.serialize_der().as_slice(),
+                            vec![bind_uri],
+                            None::<Vec<u8>>,
+                        )
+                        .unwrap_or_else(|e| panic!("add_server failed: {e}"));
+                }
+
+                if let Err(e) = quic_server.serve(listeners).await {
+                    tracing::error!("QUIC server error: {e:?}");
                 }
             });
+
         if let Err(e) = self.publish(curp_client).await {
             warn!("publish name to cluster failed: {e:?}");
         }
@@ -366,12 +434,10 @@ impl XlineServer {
     #[inline]
     pub async fn start(&self) -> Result<()> {
         let client_listen_urls = self.cluster_config.client_listen_urls();
-        let peer_listen_urls = self.cluster_config.peer_listen_urls();
         let xline_incoming = bind_addrs(client_listen_urls)?;
-        let curp_incoming = bind_addrs(peer_listen_urls)?;
         info!("start xline server on {:?}", client_listen_urls);
-        info!("start curp server on {:?}", peer_listen_urls);
-        self.start_inner(xline_incoming, curp_incoming).await
+        info!("start curp server (QUIC) on {:?}", self.cluster_config.peer_listen_urls());
+        self.start_inner(xline_incoming).await
     }
 
     /// Start `XlineServer` from listeners
@@ -383,11 +449,11 @@ impl XlineServer {
     pub async fn start_from_listener(
         &self,
         xline_listener: tokio::net::TcpListener,
-        curp_listener: tokio::net::TcpListener,
+        _curp_listener: tokio::net::TcpListener,
     ) -> Result<()> {
         let xline_incoming = tokio_stream::wrappers::TcpListenerStream::new(xline_listener);
-        let curp_incoming = tokio_stream::wrappers::TcpListenerStream::new(curp_listener);
-        self.start_inner(xline_incoming, curp_incoming).await
+        // curp_listener is no longer used — curp peer communication uses QUIC
+        self.start_inner(xline_incoming).await
     }
 
     /// Init `KvServer`, `LockServer`, `LeaseServer`, `WatchServer` and
@@ -477,14 +543,14 @@ impl XlineServer {
             Arc::clone(&curp_config),
             Arc::clone(&self.curp_storage),
             Arc::clone(&self.task_manager),
-            self.client_tls_config.clone(),
             XlineSpeculativePools::new(Arc::clone(&lease_collection)).into_inner(),
             XlineUncommittedPools::new(lease_collection).into_inner(),
+            Arc::clone(&self.quic_client),
         );
 
         let client = Arc::new(
             CurpClientBuilder::new(*self.cluster_config.client_config(), false)
-                .tls_config(self.client_tls_config.clone())
+                .quic_transport(Arc::clone(&self.quic_client))
                 .cluster_version(self.cluster_info.cluster_version())
                 .all_members(self.cluster_info.all_members_peer_urls())
                 .bypass(self.cluster_info.self_id(), curp_server.clone())

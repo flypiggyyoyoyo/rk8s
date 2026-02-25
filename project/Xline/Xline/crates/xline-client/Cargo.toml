@@ -18,8 +18,10 @@ clippy-utilities = { workspace = true }
 curp = { path = "../curp" }
 futures = { workspace = true }
 getrandom = "0.2"
+gm-quic = { git = "https://github.com/genmeta/gm-quic", rev = "4cbd9d93" }
 http = "1.0"
 prost = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
