@@ -43,7 +43,7 @@ use self::{
 use crate::{
     members::ServerId,
     rpc::{
-        ConfChange, FetchClusterRequest, FetchClusterResponse, Member, ProposeId, Protocol,
+        ConfChange, CurpService, FetchClusterRequest, FetchClusterResponse, Member, ProposeId,
         ReadState, protocol_client::ProtocolClient,
     },
     tracker::Tracker,
@@ -223,7 +223,7 @@ pub struct ClientBuilder {
 /// A client builder with bypass with local server
 #[derive(Debug, Clone)]
 #[allow(clippy::module_name_repetitions)] // same as above
-pub struct ClientBuilderWithBypass<P: Protocol> {
+pub struct ClientBuilderWithBypass<P: CurpService> {
     /// inner builder
     inner: ClientBuilder,
     /// local server id
@@ -247,7 +247,7 @@ impl ClientBuilder {
     /// Set the local server to bypass `gRPC` request
     #[inline]
     #[must_use]
-    pub fn bypass<P: Protocol>(
+    pub fn bypass<P: CurpService>(
         self,
         local_server_id: ServerId,
         local_server: P,
@@ -567,7 +567,7 @@ impl ClientBuilder {
     }
 }
 
-impl<P: Protocol> ClientBuilderWithBypass<P> {
+impl<P: CurpService> ClientBuilderWithBypass<P> {
     /// Build the client with local server
     ///
     /// # Errors

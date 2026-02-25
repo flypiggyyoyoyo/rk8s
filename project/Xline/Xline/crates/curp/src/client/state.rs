@@ -15,7 +15,7 @@ use tracing::{debug, info};
 use crate::{
     members::ServerId,
     rpc::{
-        self, CurpError, FetchClusterRequest, FetchClusterResponse, Protocol,
+        self, CurpError, FetchClusterRequest, FetchClusterResponse, CurpService,
         connect::{BypassedConnect, ConnectApi},
         transport::TransportConfig,
     },
@@ -435,7 +435,7 @@ impl StateBuilder {
     }
 
     /// Build the state with local server
-    pub(super) fn build_bypassed<P: Protocol>(
+    pub(super) fn build_bypassed<P: CurpService>(
         mut self,
         local_server_id: ServerId,
         local_server: P,
