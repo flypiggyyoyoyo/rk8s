@@ -29,7 +29,7 @@ use futures::{StreamExt, stream::FuturesUnordered};
 use parking_lot::RwLock;
 use tokio::task::JoinHandle;
 use tonic::transport::ClientTlsConfig;
-use tonic::{Code, Status};
+use xlinerpc::status::{Code, Status};
 use tracing::{debug, warn};
 use utils::{build_endpoint, config::ClientConfig};
 // TODO: use our own status type
@@ -369,7 +369,9 @@ impl ClientBuilder {
                     let mut protocol_client = ProtocolClient::new(channel);
                     let mut req = tonic::Request::new(FetchClusterRequest::default());
                     req.set_timeout(propose_timeout);
-                    let fetch_cluster_res = protocol_client.fetch_cluster(req).await?.into_inner();
+                    let fetch_cluster_res = protocol_client.fetch_cluster(req).await
+                        .map_err(|e| Status::new(Code::from_i32(e.code() as i32), e.message()))?
+                        .into_inner();
                     Ok::<FetchClusterResponse, Status>(fetch_cluster_res)
                 }
             })

@@ -16,7 +16,7 @@ use futures::StreamExt;
 #[cfg(test)]
 use mockall::automock;
 use tokio::sync::Mutex;
-use tonic::Status;
+use xlinerpc::status::Status;
 use tonic::transport::ClientTlsConfig;
 use tonic::transport::{Channel, Endpoint};
 use tracing::{debug, error, info, instrument};
@@ -356,7 +356,7 @@ impl<C> Connect<C> {
 
     /// After RPC
     #[cfg(feature = "client-metrics")]
-    fn after_rpc<R>(&self, start_at: std::time::Instant, res: &Result<R, Status>) {
+    fn after_rpc<R>(&self, start_at: std::time::Instant, res: &Result<R, tonic::Status>) {
         super::metrics::get().peer_round_trip_time_seconds.record(
             start_at.elapsed().as_secs(),
             &[opentelemetry::KeyValue::new("to", self.id.to_string())],

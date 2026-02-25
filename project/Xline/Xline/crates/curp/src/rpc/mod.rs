@@ -9,9 +9,7 @@ use curp_external_api::{
 use futures::Stream;
 use prost::Message;
 use serde::{Deserialize, Serialize};
-use tonic::{Code, Status};
-// TODO: use our own status type
-// use xlinerpc::status::{Code,Status};
+use xlinerpc::status::{Code, Status};
 pub(crate) use self::proto::{
     commandpb::CurpError as CurpErrorWrapper,
     inner_messagepb::{
@@ -928,10 +926,25 @@ impl<E: std::error::Error + 'static> From<E> for CurpError {
     #[inline]
     fn from(value: E) -> Self {
         let err: &dyn std::error::Error = &value;
+        // Try xlinerpc::Status first (primary path)
         if let Some(status) = err.downcast_ref::<Status>() {
             // Unavailable code often occurs in rpc connection errors,
             // Please DO NOT use this code in CurpError to Status.
             if status.code() == Code::Unavailable {
+                return Self::RpcTransport(());
+            }
+            if !status.details().is_empty() {
+                return match CurpErrorWrapper::decode(status.details()) {
+                    Ok(e) => e
+                        .err
+                        .unwrap_or_else(|| unreachable!("err must be set in CurpErrorWrapper")),
+                    Err(dec_err) => Self::internal(dec_err.to_string()),
+                };
+            }
+        }
+        // Temporary: also handle tonic::Status while tonic transport code still exists
+        if let Some(status) = err.downcast_ref::<tonic::Status>() {
+            if status.code() == tonic::Code::Unavailable {
                 return Self::RpcTransport(());
             }
             if !status.details().is_empty() {
@@ -1011,6 +1024,27 @@ impl From<CurpError> for Status {
         let details = CurpErrorWrapper { err: Some(err) }.encode_to_vec();
 
         Status::with_details(code, msg, details.into())
+    }
+}
+
+/// Temporary bridge: CurpError → tonic::Status via xlinerpc::Status
+/// This exists only while tonic Protocol/InnerProtocol impls remain (Phase 3 will remove them).
+impl From<CurpError> for tonic::Status {
+    #[inline]
+    fn from(err: CurpError) -> Self {
+        let xlinerpc_status: Status = err.into();
+        // Convert xlinerpc::Status → tonic::Status
+        let code = tonic::Code::from(i32::from(xlinerpc_status.code()));
+        let details = xlinerpc_status.details();
+        if details.is_empty() {
+            tonic::Status::new(code, xlinerpc_status.message())
+        } else {
+            tonic::Status::with_details(
+                code,
+                xlinerpc_status.message(),
+                bytes::Bytes::copy_from_slice(details),
+            )
+        }
     }
 }
 

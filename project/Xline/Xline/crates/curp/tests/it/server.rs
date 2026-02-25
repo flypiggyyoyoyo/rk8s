@@ -17,7 +17,7 @@ use rand::{Rng, thread_rng};
 use test_macros::abort_on_panic;
 use tokio::net::TcpListener;
 use tokio_stream::StreamExt;
-use tonic::Code;
+use xlinerpc::status::Code;
 use utils::{config::ClientConfig, timestamp};
 // TODO: use our own status type
 // use xlinerpc::status::Code;

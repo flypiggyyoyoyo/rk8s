@@ -6,9 +6,6 @@ use std::{
 use async_trait::async_trait;
 use event_listener::Event;
 use futures::Stream;
-// use tonic::Status;
-// TODO: use our own status type
-// use xlinerpc::status::Status;
 
 use crate::{
     members::ServerId,

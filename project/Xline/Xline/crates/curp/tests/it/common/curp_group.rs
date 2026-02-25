@@ -34,8 +34,7 @@ use tokio::{
     time::timeout,
 };
 use tokio_stream::wrappers::TcpListenerStream;
-use tonic::Status;
-use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, ServerTlsConfig};
+use xlinerpc::status::Status;use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, ServerTlsConfig};
 use tracing::debug;
 use utils::{
     build_endpoint,

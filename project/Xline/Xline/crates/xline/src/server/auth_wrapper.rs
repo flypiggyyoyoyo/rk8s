@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{pin::Pin, sync::Arc};
 
 use curp::{
     cmd::PbCodec,
@@ -10,7 +10,6 @@ use curp::{
         RecordResponse, ShutdownRequest, ShutdownResponse,
     },
 };
-use flume::r#async::RecvStream;
 use tonic::Status;
 use tracing::debug;
 use xlineapi::command::Command;
@@ -39,7 +38,7 @@ impl AuthWrapper {
 
 #[tonic::async_trait]
 impl Protocol for AuthWrapper {
-    type ProposeStreamStream = RecvStream<'static, Result<OpResponse, Status>>;
+    type ProposeStreamStream = Pin<Box<dyn futures::Stream<Item = Result<OpResponse, Status>> + Send>>;
 
     async fn propose_stream(
         &self,

@@ -4,9 +4,7 @@ use curp::cmd::{PbCodec, PbSerializeError};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tonic::{Code, Status};
-// TODO: use our status/code to replace this.
-// use xlinerpc::status::{Code,Status};
+use xlinerpc::status::{Code, Status};
 use crate::{PbExecuteError, PbExecuteErrorOuter, PbRevisions, PbUserRole};
 
 /// Error met when executing commands
@@ -313,6 +311,18 @@ impl From<ExecuteError> for Status {
         };
 
         Status::new(code, message)
+    }
+}
+
+/// Bridge conversion: ExecuteError → tonic::Status (via xlinerpc::Status)
+///
+/// This exists because xline server code returns `Result<_, tonic::Status>` and uses `?`
+/// on `ExecuteError`. Will be removed when xline server migrates away from tonic.
+impl From<ExecuteError> for tonic::Status {
+    #[inline]
+    fn from(err: ExecuteError) -> Self {
+        let xlinerpc_status: Status = err.into();
+        xlinerpc_status.into()
     }
 }
 
