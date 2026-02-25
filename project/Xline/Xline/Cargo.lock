@@ -711,7 +711,6 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tonic",
- "tonic-build",
  "tower 0.4.13",
  "tracing",
  "tracing-opentelemetry",

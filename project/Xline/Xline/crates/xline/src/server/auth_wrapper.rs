@@ -7,10 +7,11 @@ use curp::{
         CurpError, CurpService, FetchClusterRequest, FetchClusterResponse, FetchReadStateRequest,
         FetchReadStateResponse, LeaseKeepAliveMsg, Metadata, MoveLeaderRequest,
         MoveLeaderResponse, OpResponse, ProposeConfChangeRequest, ProposeConfChangeResponse,
-        ProposeRequest, Protocol, PublishRequest, PublishResponse, ReadIndexRequest,
+        ProposeRequest, PublishRequest, PublishResponse, ReadIndexRequest,
         ReadIndexResponse, RecordRequest, RecordResponse, ShutdownRequest, ShutdownResponse,
     },
 };
+use crate::curp_proto::commandpb::protocol_server::Protocol;
 use futures::{Stream, StreamExt};
 use tonic::Status;
 use tracing::debug;

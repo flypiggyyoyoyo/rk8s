@@ -7,7 +7,7 @@ use clippy_utilities::{NumericCast, OverflowArithmetic};
 use curp::{
     client::ClientBuilder as CurpClientBuilder,
     members::{ClusterInfo, get_cluster_info_from_remote},
-    rpc::{ProtocolServer, QuicGrpcServer, TransportConfig},
+    rpc::{QuicGrpcServer, TransportConfig},
     server::{DB as CurpDB, Rpc, StorageApi as _},
 };
 use dashmap::DashMap;
@@ -44,6 +44,7 @@ use super::{
 };
 use crate::{
     conflict::{XlineSpeculativePools, XlineUncommittedPools},
+    curp_proto::commandpb::protocol_server::ProtocolServer,
     header_gen::HeaderGenerator,
     id_gen::IdGenerator,
     metrics::Metrics,

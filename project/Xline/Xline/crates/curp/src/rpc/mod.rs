@@ -53,10 +53,7 @@ pub use self::proto::{
         fetch_read_state_response::{IdSet, ReadState},
         op_response::Op as ResponseOp,
         propose_conf_change_request::{ConfChange, ConfChangeType},
-        protocol_client,
-        protocol_server::{Protocol, ProtocolServer},
     },
-    inner_messagepb::inner_protocol_server::InnerProtocolServer,
 };
 use crate::{LogIndex, cmd::Command, log_entry::LogEntry, members::ServerId};
 
@@ -323,11 +320,11 @@ pub(crate) trait InnerCurpService: Send + Sync + 'static {
 )]
 mod proto {
     pub(crate) mod commandpb {
-        tonic::include_proto!("commandpb");
+        include!(concat!(env!("OUT_DIR"), "/commandpb.rs"));
     }
 
     pub(crate) mod inner_messagepb {
-        tonic::include_proto!("inner_messagepb");
+        include!(concat!(env!("OUT_DIR"), "/inner_messagepb.rs"));
     }
 }
 
