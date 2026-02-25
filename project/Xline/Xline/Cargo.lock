@@ -714,6 +714,7 @@ dependencies = [
  "tonic-build",
  "tower 0.4.13",
  "tracing",
+ "tracing-opentelemetry",
  "tracing-subscriber",
  "tracing-test",
  "utils",
