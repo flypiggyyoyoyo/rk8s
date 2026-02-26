@@ -710,8 +710,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
- "tonic",
- "tower 0.4.13",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
