@@ -428,7 +428,7 @@ impl CurpGroup {
         let addrs: Vec<String> = self.all_addrs().cloned().collect();
         ClientBuilder::new(ClientConfig::default(), true)
             .quic_transport_for_test(Arc::clone(&self.quic_client))
-            .quic_discover_from(addrs)
+            .discover_from(addrs)
             .await
             .unwrap()
             .build()

@@ -170,7 +170,7 @@ impl CurpService for AuthWrapper {
 }
 
 // ============================================================================
-// Tonic Protocol adapter (temporary, until Phase 4 removes ProtocolServer usage)
+// Tonic Protocol adapter (xline gRPC boundary layer)
 //
 // Delegates to CurpService after converting tonic::Request → Metadata.
 // For propose_stream, also handles mTLS peer cert auth (get_cn) which is

@@ -124,7 +124,7 @@ impl Metadata {
     /// Check if request is bypassed
     #[inline]
     pub fn is_bypassed(&self) -> bool {
-        self.get("bypass").is_some()
+        self.get("bypass") == Some("true")
     }
 
     /// Get auth token

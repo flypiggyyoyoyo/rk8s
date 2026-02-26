@@ -311,33 +311,20 @@ impl ClientBuilder {
         self
     }
 
-    /// Discover the initial states from some endpoints using QUIC transport
+    /// Discover the initial states from some endpoints
     ///
     /// # Errors
     ///
     /// Return `CurpError` for connection failure or some server errors.
     #[inline]
     pub async fn discover_from(
-        self,
-        addrs: Vec<String>,
-    ) -> Result<Self, crate::rpc::CurpError> {
-        self.quic_discover_from(addrs).await
-    }
-
-    /// Discover the initial states from some endpoints using QUIC transport
-    ///
-    /// # Errors
-    ///
-    /// Return `CurpError` for connection failure or some server errors.
-    #[inline]
-    pub async fn quic_discover_from(
         mut self,
         addrs: Vec<String>,
     ) -> Result<Self, crate::rpc::CurpError> {
         use crate::rpc::{CurpError, MethodId, quic_transport::channel::QuicChannel};
 
         let transport = self.transport.as_ref().ok_or_else(|| {
-            CurpError::internal("quic_discover_from requires quic_transport to be set")
+            CurpError::internal("discover_from requires quic_transport to be set")
         })?;
         let quic_client = Arc::clone(&transport.client);
         let dns_fallback = transport.dns_fallback;

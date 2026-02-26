@@ -482,7 +482,6 @@ impl QuicChannel {
 
 /// Test-only: send a raw method ID to test unknown-method error path.
 #[doc(hidden)]
-#[doc(hidden)]
 impl QuicChannel {
     /// Send a raw u16 method ID (bypasses `MethodId` type safety).
     /// Response validation is identical to `unary_call`.

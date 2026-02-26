@@ -359,7 +359,7 @@ impl XlineServer {
     ///
     /// # Errors
     ///
-    /// Will return `Err` when `tonic::Server` serve return an error
+    /// Will return `Err` when server fails to start
     #[inline]
     /// inner start method shared by `start` and `start_from_listener`
     async fn start_inner<I1, IO, IE>(&self, xline_incoming: I1) -> Result<()>
@@ -380,6 +380,8 @@ impl XlineServer {
             });
 
         // Start QUIC server for curp peer communication
+        // NOTE: reuses TaskName::TonicServer for shutdown ordering (curp QUIC server
+        // has the same dependency graph as the original tonic server)
         let peer_listen_urls = self.cluster_config.peer_listen_urls().clone();
         let self_name = self.cluster_info.self_name();
         self.task_manager
@@ -431,7 +433,7 @@ impl XlineServer {
     ///
     /// # Errors
     ///
-    /// Will return `Err` when `tonic::Server` serve return an error
+    /// Will return `Err` when server fails to start
     #[inline]
     pub async fn start(&self) -> Result<()> {
         let client_listen_urls = self.cluster_config.client_listen_urls();
@@ -443,9 +445,12 @@ impl XlineServer {
 
     /// Start `XlineServer` from listeners
     ///
+    /// Note: `_curp_listener` is unused since curp peer communication now uses QUIC.
+    /// The parameter is kept for API compatibility.
+    ///
     /// # Errors
     ///
-    /// Will return `Err` when `tonic::Server` serve return an error
+    /// Will return `Err` when server fails to start
     #[inline]
     pub async fn start_from_listener(
         &self,

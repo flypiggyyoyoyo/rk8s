@@ -366,7 +366,6 @@ fn install_snapshot_stream(
 // QUIC transport implementations
 // ============================================================================
 
-#[allow(dead_code, unused_results)]
 mod quic_connect_impl {
     use std::{
         sync::{Arc, atomic::AtomicU64},
