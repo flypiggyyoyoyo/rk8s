@@ -1,7 +1,7 @@
 //! QUIC-based CurpGroup for integration testing
 //!
-//! This module provides a QUIC variant of `CurpGroup` that uses gm-quic
-//! instead of tonic gRPC for transport. All nodes share a single `QuicListeners`
+//! This module provides a QUIC-based `CurpGroup` that uses gm-quic
+//! for transport. All nodes share a single `QuicListeners`
 //! (gm-quic global singleton) with per-node virtual hosts routed by SNI.
 
 use std::{collections::HashMap, sync::Arc, time::Duration};

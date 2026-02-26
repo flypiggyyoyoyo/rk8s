@@ -1043,7 +1043,7 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> CurpNode<C, CE, RC> {
     }
 
     /// Send `append_entries` request
-    /// Return `tonic::Error` if meet network issue
+    /// Return `CurpError` if meet network issue
     /// Return (`leader_retires`, `ae_succeed`)
     #[allow(clippy::arithmetic_side_effects)] // won't overflow
     async fn send_ae(
@@ -1085,7 +1085,7 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> CurpNode<C, CE, RC> {
     }
 
     /// Send snapshot
-    /// Return `tonic::Error` if meet network issue
+    /// Return `CurpError` if meet network issue
     /// Return `leader_retires`
     async fn send_snapshot(
         connect: &(impl InnerConnectApi + ?Sized),

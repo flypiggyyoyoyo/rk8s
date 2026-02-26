@@ -10,13 +10,11 @@ use futures::Stream;
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use xlinerpc::status::{Code, Status};
-pub(crate) use self::proto::{
-    commandpb::CurpError as CurpErrorWrapper,
-    inner_messagepb::{
-        AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
-        InstallSnapshotResponse, TriggerShutdownRequest, TriggerShutdownResponse,
-        TryBecomeLeaderNowRequest, TryBecomeLeaderNowResponse, VoteRequest, VoteResponse,
-    },
+pub use self::proto::commandpb::CurpError as CurpErrorWrapper;
+pub(crate) use self::proto::inner_messagepb::{
+    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
+    InstallSnapshotResponse, TriggerShutdownRequest, TriggerShutdownResponse,
+    TryBecomeLeaderNowRequest, TryBecomeLeaderNowResponse, VoteRequest, VoteResponse,
 };
 pub use self::proto::{
     commandpb::{
@@ -91,8 +89,8 @@ pub use quic_transport::ALL_METHOD_IDS;
 ///    dynamically injected by OpenTelemetry Propagator
 ///
 /// Client side: inject tracing context into Metadata, then serialize to QUIC frame header.
-/// Server side: rebuild `tonic::metadata::MetadataMap` from Metadata for `extract_span()`,
-///              and directly read bypass/token.
+/// Server side: read bypass/token directly from Metadata, and rebuild tracing context
+///              via OpenTelemetry Extractor.
 #[derive(Debug, Clone, Default)]
 pub struct Metadata {
     /// Key-value pairs
@@ -146,27 +144,6 @@ impl Metadata {
     /// Rebuild from deserialized key-value pairs
     #[inline]
     pub fn from_pairs(pairs: Vec<(String, String)>) -> Self {
-        Self { pairs }
-    }
-
-    /// Build from `tonic::metadata::MetadataMap`
-    ///
-    /// Used by tonic Protocol adapter impls (e.g. AuthWrapper in xline crate)
-    /// to convert incoming request metadata into the transport-agnostic `Metadata`
-    /// type before delegating to `CurpService`.
-    #[inline]
-    pub fn from_tonic_metadata(map: &tonic::metadata::MetadataMap) -> Self {
-        let pairs = map
-            .iter()
-            .filter_map(|kv| match kv {
-                tonic::metadata::KeyAndValueRef::Ascii(key, val) => {
-                    val.to_str()
-                        .ok()
-                        .map(|v| (key.as_str().to_owned(), v.to_owned()))
-                }
-                _ => None,
-            })
-            .collect();
         Self { pairs }
     }
 }
@@ -225,7 +202,7 @@ impl utils::tracing::Inject for Metadata {
 
 /// Transport-agnostic service trait for external protocol
 ///
-/// This trait abstracts the RPC methods so that both tonic and QUIC
+/// This trait abstracts the RPC methods so that different transport
 /// implementations can be used interchangeably by the dispatcher.
 #[async_trait]
 pub trait CurpService: Send + Sync + 'static {
@@ -1055,28 +1032,6 @@ impl From<CurpError> for Status {
         let details = CurpErrorWrapper { err: Some(err) }.encode_to_vec();
 
         Status::with_details(code, msg, details.into())
-    }
-}
-
-/// Bridge: CurpError → tonic::Status via xlinerpc::Status
-///
-/// Needed by xline crate's tonic Protocol adapter (AuthWrapper) which still
-/// serves client-facing curp protocol over tonic gRPC.
-impl From<CurpError> for tonic::Status {
-    #[inline]
-    fn from(err: CurpError) -> Self {
-        let xlinerpc_status: Status = err.into();
-        let code = tonic::Code::from(i32::from(xlinerpc_status.code()));
-        let details = xlinerpc_status.details();
-        if details.is_empty() {
-            tonic::Status::new(code, xlinerpc_status.message())
-        } else {
-            tonic::Status::with_details(
-                code,
-                xlinerpc_status.message(),
-                bytes::Bytes::copy_from_slice(details),
-            )
-        }
     }
 }
 

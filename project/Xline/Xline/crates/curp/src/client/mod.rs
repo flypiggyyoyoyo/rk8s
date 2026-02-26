@@ -460,7 +460,7 @@ impl ClientBuilder {
     ///
     /// # Errors
     ///
-    /// Return `tonic::transport::Error` for connection failure.
+    /// Return error for connection failure.
     #[inline]
     #[allow(clippy::result_large_err)]
     pub fn build<C: Command>(
@@ -483,7 +483,7 @@ impl<P: CurpService> ClientBuilderWithBypass<P> {
     ///
     /// # Errors
     ///
-    /// Return `tonic::transport::Error` for connection failure.
+    /// Return error for connection failure.
     #[inline]
     #[allow(clippy::result_large_err)]
     pub fn build<C: Command>(self) -> Result<impl ClientApi<Error = Status, Cmd = C>, Status> {

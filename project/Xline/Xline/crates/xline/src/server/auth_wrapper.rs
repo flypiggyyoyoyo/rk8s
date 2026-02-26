@@ -4,11 +4,12 @@ use async_trait::async_trait;
 use curp::{
     cmd::PbCodec,
     rpc::{
-        CurpError, CurpService, FetchClusterRequest, FetchClusterResponse, FetchReadStateRequest,
-        FetchReadStateResponse, LeaseKeepAliveMsg, Metadata, MoveLeaderRequest,
-        MoveLeaderResponse, OpResponse, ProposeConfChangeRequest, ProposeConfChangeResponse,
-        ProposeRequest, PublishRequest, PublishResponse, ReadIndexRequest,
-        ReadIndexResponse, RecordRequest, RecordResponse, ShutdownRequest, ShutdownResponse,
+        CurpError, CurpService, FetchClusterRequest, FetchClusterResponse,
+        FetchReadStateRequest, FetchReadStateResponse, LeaseKeepAliveMsg, Metadata,
+        MoveLeaderRequest, MoveLeaderResponse, OpResponse, ProposeConfChangeRequest,
+        ProposeConfChangeResponse, ProposeRequest, PublishRequest, PublishResponse,
+        ReadIndexRequest, ReadIndexResponse, RecordRequest, RecordResponse, ShutdownRequest,
+        ShutdownResponse,
     },
 };
 use crate::curp_proto::commandpb::protocol_server::Protocol;
@@ -19,6 +20,37 @@ use xlineapi::command::Command;
 
 use super::xline_server::CurpServer;
 use crate::storage::AuthStore;
+
+/// Build transport-agnostic `Metadata` from `tonic::metadata::MetadataMap`
+fn metadata_from_tonic(map: &tonic::metadata::MetadataMap) -> Metadata {
+    let pairs = map
+        .iter()
+        .filter_map(|kv| match kv {
+            tonic::metadata::KeyAndValueRef::Ascii(key, val) => val
+                .to_str()
+                .ok()
+                .map(|v| (key.as_str().to_owned(), v.to_owned())),
+            _ => None,
+        })
+        .collect();
+    Metadata::from_pairs(pairs)
+}
+
+/// Convert `CurpError` → `tonic::Status` via `xlinerpc::Status`
+fn curp_error_to_tonic_status(err: CurpError) -> Status {
+    let xlinerpc_status: xlinerpc::status::Status = err.into();
+    let code = tonic::Code::from(i32::from(xlinerpc_status.code()));
+    let details = xlinerpc_status.details();
+    if details.is_empty() {
+        Status::new(code, xlinerpc_status.message())
+    } else {
+        Status::with_details(
+            code,
+            xlinerpc_status.message(),
+            bytes::Bytes::copy_from_slice(details),
+        )
+    }
+}
 
 /// Auth wrapper
 pub(crate) struct AuthWrapper {
@@ -52,7 +84,7 @@ impl AuthWrapper {
         {
             let mut command: Command = req
                 .cmd()
-                .map_err(|e| Status::internal(e.to_string()))?;
+                .map_err(CurpError::from)?;
             command.set_auth_info(auth_info);
             req.command = command.encode();
         }
@@ -165,11 +197,11 @@ impl Protocol for AuthWrapper {
             command.set_auth_info(auth_info);
             req.command = command.encode();
         }
-        let meta = Metadata::from_tonic_metadata(request.metadata());
+        let meta = metadata_from_tonic(request.metadata());
         let stream = CurpService::propose_stream(&self.curp_server, req, meta)
             .await
-            .map_err(Status::from)?;
-        let mapped = stream.map(|r| r.map_err(Status::from));
+            .map_err(curp_error_to_tonic_status)?;
+        let mapped = stream.map(|r| r.map_err(curp_error_to_tonic_status));
         Ok(tonic::Response::new(Box::pin(mapped)))
     }
 
@@ -177,9 +209,9 @@ impl Protocol for AuthWrapper {
         &self,
         request: tonic::Request<RecordRequest>,
     ) -> Result<tonic::Response<RecordResponse>, Status> {
-        let meta = Metadata::from_tonic_metadata(request.metadata());
+        let meta = metadata_from_tonic(request.metadata());
         Ok(tonic::Response::new(
-            CurpService::record(self, request.into_inner(), meta).map_err(Status::from)?,
+            CurpService::record(self, request.into_inner(), meta).map_err(curp_error_to_tonic_status)?,
         ))
     }
 
@@ -187,9 +219,9 @@ impl Protocol for AuthWrapper {
         &self,
         request: tonic::Request<ReadIndexRequest>,
     ) -> Result<tonic::Response<ReadIndexResponse>, Status> {
-        let meta = Metadata::from_tonic_metadata(request.metadata());
+        let meta = metadata_from_tonic(request.metadata());
         Ok(tonic::Response::new(
-            CurpService::read_index(self, meta).map_err(Status::from)?,
+            CurpService::read_index(self, meta).map_err(curp_error_to_tonic_status)?,
         ))
     }
 
@@ -197,11 +229,11 @@ impl Protocol for AuthWrapper {
         &self,
         request: tonic::Request<ShutdownRequest>,
     ) -> Result<tonic::Response<ShutdownResponse>, Status> {
-        let meta = Metadata::from_tonic_metadata(request.metadata());
+        let meta = metadata_from_tonic(request.metadata());
         Ok(tonic::Response::new(
             CurpService::shutdown(self, request.into_inner(), meta)
                 .await
-                .map_err(Status::from)?,
+                .map_err(curp_error_to_tonic_status)?,
         ))
     }
 
@@ -209,11 +241,11 @@ impl Protocol for AuthWrapper {
         &self,
         request: tonic::Request<ProposeConfChangeRequest>,
     ) -> Result<tonic::Response<ProposeConfChangeResponse>, Status> {
-        let meta = Metadata::from_tonic_metadata(request.metadata());
+        let meta = metadata_from_tonic(request.metadata());
         Ok(tonic::Response::new(
             CurpService::propose_conf_change(self, request.into_inner(), meta)
                 .await
-                .map_err(Status::from)?,
+                .map_err(curp_error_to_tonic_status)?,
         ))
     }
 
@@ -221,9 +253,9 @@ impl Protocol for AuthWrapper {
         &self,
         request: tonic::Request<PublishRequest>,
     ) -> Result<tonic::Response<PublishResponse>, Status> {
-        let meta = Metadata::from_tonic_metadata(request.metadata());
+        let meta = metadata_from_tonic(request.metadata());
         Ok(tonic::Response::new(
-            CurpService::publish(self, request.into_inner(), meta).map_err(Status::from)?,
+            CurpService::publish(self, request.into_inner(), meta).map_err(curp_error_to_tonic_status)?,
         ))
     }
 
@@ -232,7 +264,7 @@ impl Protocol for AuthWrapper {
         request: tonic::Request<FetchClusterRequest>,
     ) -> Result<tonic::Response<FetchClusterResponse>, Status> {
         Ok(tonic::Response::new(
-            CurpService::fetch_cluster(self, request.into_inner()).map_err(Status::from)?,
+            CurpService::fetch_cluster(self, request.into_inner()).map_err(curp_error_to_tonic_status)?,
         ))
     }
 
@@ -241,7 +273,7 @@ impl Protocol for AuthWrapper {
         request: tonic::Request<FetchReadStateRequest>,
     ) -> Result<tonic::Response<FetchReadStateResponse>, Status> {
         Ok(tonic::Response::new(
-            CurpService::fetch_read_state(self, request.into_inner()).map_err(Status::from)?,
+            CurpService::fetch_read_state(self, request.into_inner()).map_err(curp_error_to_tonic_status)?,
         ))
     }
 
@@ -252,7 +284,7 @@ impl Protocol for AuthWrapper {
         Ok(tonic::Response::new(
             CurpService::move_leader(self, request.into_inner())
                 .await
-                .map_err(Status::from)?,
+                .map_err(curp_error_to_tonic_status)?,
         ))
     }
 
@@ -267,7 +299,7 @@ impl Protocol for AuthWrapper {
         Ok(tonic::Response::new(
             CurpService::lease_keep_alive(self, curp_stream)
                 .await
-                .map_err(Status::from)?,
+                .map_err(curp_error_to_tonic_status)?,
         ))
     }
 }
