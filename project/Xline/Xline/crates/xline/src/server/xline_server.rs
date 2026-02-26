@@ -375,17 +375,15 @@ impl XlineServer {
 
         // Start tonic server for xline client-facing services
         self.task_manager
-            .spawn(TaskName::TonicServer, |n1| async move {
+            .spawn(TaskName::CurpServer, |n1| async move {
                 let _ig = xline_router.serve_with_incoming_shutdown(xline_incoming, n1.wait()).await;
             });
 
         // Start QUIC server for curp peer communication
-        // NOTE: reuses TaskName::TonicServer for shutdown ordering (curp QUIC server
-        // has the same dependency graph as the original tonic server)
         let peer_listen_urls = self.cluster_config.peer_listen_urls().clone();
         let self_name = self.cluster_info.self_name();
         self.task_manager
-            .spawn(TaskName::TonicServer, |_n| async move {
+            .spawn(TaskName::CurpServer, |_n| async move {
                 // Build QUIC listeners
                 // TODO: integrate with server_tls_config for production TLS
                 let listeners = gm_quic::prelude::QuicListeners::builder()
