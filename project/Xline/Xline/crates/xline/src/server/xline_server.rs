@@ -90,6 +90,8 @@ pub struct XlineServer {
     peer_cert_der: Option<Vec<u8>>,
     /// Peer TLS private key (DER) for QUIC server
     peer_key_der: Option<Vec<u8>>,
+    /// Peer CA certificate (DER) for QUIC server mTLS client verification
+    peer_ca_cert_der: Option<Vec<u8>>,
     /// Task Manager
     task_manager: Arc<TaskManager>,
     /// Curp storage
@@ -129,6 +131,13 @@ impl XlineServer {
         // Read peer TLS certs for QUIC server (DER format)
         let (peer_cert_der, peer_key_der) = Self::read_peer_tls_der(&tls_config).await?;
 
+        // Read peer CA cert for QUIC server mTLS
+        let peer_ca_cert_der = if let Some(ca_path) = tls_config.peer_ca_cert_path() {
+            Some(fs::read(ca_path).await?)
+        } else {
+            None
+        };
+
         // Build QUIC client for curp peer communication with proper TLS
         let quic_client = Arc::new(Self::build_quic_client(&tls_config).await?);
         let transport = TransportConfig {
@@ -155,6 +164,7 @@ impl XlineServer {
             quic_client,
             peer_cert_der,
             peer_key_der,
+            peer_ca_cert_der,
             task_manager: Arc::new(TaskManager::new()),
             curp_storage,
         })
@@ -343,10 +353,10 @@ impl XlineServer {
             .add_service(RpcWatchServer::new(watch_server))
             .add_service(RpcMaintenanceServer::new(maintenance_server))
             .add_service(RpcClusterServer::new(cluster_server))
-            .add_service(ProtocolServer::new(auth_wrapper));
+            .add_service(ProtocolServer::new(auth_wrapper.clone()));
 
-        // Curp peer communication uses QUIC
-        let quic_server = QuicGrpcServer::new(curp_server);
+        // Curp peer communication uses QUIC, with AuthWrapper for token-based auth
+        let quic_server = QuicGrpcServer::new_with_service(auth_wrapper, curp_server);
 
         let xline_router = {
             let (mut reporter, health_server) = tonic_health::server::health_reporter();
@@ -387,67 +397,123 @@ impl XlineServer {
         let self_name = self.cluster_info.self_name();
         let peer_cert_der = self.peer_cert_der.clone();
         let peer_key_der = self.peer_key_der.clone();
-        self.task_manager
-            .spawn(TaskName::CurpServer, |_n| async move {
-                // Build QUIC listeners
-                let listeners = gm_quic::prelude::QuicListeners::builder()
-                    .expect("QuicListeners::builder")
-                    .without_client_cert_verifier()
-                    .listen(64);
+        let peer_ca_cert_der = self.peer_ca_cert_der.clone();
 
-                // Use configured certs or fall back to self-signed
-                let (cert_der, key_der) = match (peer_cert_der, peer_key_der) {
-                    (Some(cert), Some(key)) => (cert, key),
-                    _ => {
-                        tracing::warn!(
-                            "No peer TLS certificate configured; using ephemeral self-signed cert for QUIC server"
-                        );
-                        let key = rcgen::KeyPair::generate().expect("generate key");
-                        // Use hostnames/IPs from peer_listen_urls as SANs
-                        let sans: Vec<String> = peer_listen_urls
-                            .iter()
-                            .filter_map(|url| {
-                                url.strip_prefix("http://")
-                                    .or_else(|| url.strip_prefix("https://"))
-                                    .unwrap_or(url)
-                                    .split(':')
-                                    .next()
-                                    .map(String::from)
-                            })
-                            .collect();
-                        let sans = if sans.is_empty() {
-                            vec![self_name.clone()]
-                        } else {
-                            sans
-                        };
-                        let params =
-                            rcgen::CertificateParams::new(sans).expect("cert params");
-                        let cert = params.self_signed(&key).expect("self-sign cert");
-                        (cert.der().to_vec(), key.serialize_der())
+        // Pre-validate peer listen URLs and build cert/key before spawning
+        // to avoid panics inside the spawned task
+        let (cert_der, key_der) = match (peer_cert_der, peer_key_der) {
+            (Some(cert), Some(key)) => (cert, key),
+            _ => {
+                tracing::warn!(
+                    "No peer TLS certificate configured; using ephemeral self-signed cert for QUIC server"
+                );
+                let key = rcgen::KeyPair::generate().expect("generate key");
+                // Use hostnames/IPs from peer_listen_urls as SANs
+                let sans: Vec<String> = peer_listen_urls
+                    .iter()
+                    .filter_map(|url| {
+                        url.strip_prefix("http://")
+                            .or_else(|| url.strip_prefix("https://"))
+                            .unwrap_or(url)
+                            .split(':')
+                            .next()
+                            .map(String::from)
+                    })
+                    .collect();
+                let sans = if sans.is_empty() {
+                    vec![self_name.clone()]
+                } else {
+                    sans
+                };
+                let params =
+                    rcgen::CertificateParams::new(sans).expect("cert params");
+                let cert = params.self_signed(&key).expect("self-sign cert");
+                (cert.der().to_vec(), key.serialize_der())
+            }
+        };
+
+        // Pre-parse bind URIs to catch errors early
+        let bind_uris: Vec<(String, gm_quic::qbase::net::addr::BindUri)> = peer_listen_urls
+            .iter()
+            .map(|url| {
+                let addr = url
+                    .strip_prefix("http://")
+                    .or_else(|| url.strip_prefix("https://"))
+                    .unwrap_or(url);
+                let bind_uri: gm_quic::qbase::net::addr::BindUri = format!("inet://{addr}")
+                    .parse()
+                    .unwrap_or_else(|e| panic!("invalid peer listen url {addr}: {e}"));
+                (addr.to_owned(), bind_uri)
+            })
+            .collect();
+
+        self.task_manager
+            .spawn(TaskName::CurpServer, |n| async move {
+                // Build QUIC listeners with conditional mTLS
+                let listeners = if let Some(ca_pem) = peer_ca_cert_der {
+                    // Parse CA certs and build a client cert verifier for mTLS
+                    let ca_certs: Vec<_> = match rustls_pemfile::certs(&mut ca_pem.as_slice())
+                        .collect::<Result<Vec<_>, _>>()
+                    {
+                        Ok(certs) => certs,
+                        Err(e) => {
+                            tracing::error!("Failed to parse peer CA cert for QUIC mTLS: {e}");
+                            return;
+                        }
+                    };
+                    let mut root_store = rustls::RootCertStore::empty();
+                    for cert in ca_certs {
+                        if let Err(e) = root_store.add(cert) {
+                            tracing::error!("Failed to add peer CA cert to root store: {e}");
+                            return;
+                        }
                     }
+                    let verifier = match rustls::server::WebPkiClientVerifier::builder(
+                        Arc::new(root_store),
+                    )
+                    .build()
+                    {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::error!("Failed to build client cert verifier: {e}");
+                            return;
+                        }
+                    };
+                    gm_quic::prelude::QuicListeners::builder()
+                        .expect("QuicListeners::builder")
+                        .with_client_cert_verifier(verifier)
+                        .listen(64)
+                } else {
+                    gm_quic::prelude::QuicListeners::builder()
+                        .expect("QuicListeners::builder")
+                        .without_client_cert_verifier()
+                        .listen(64)
                 };
 
-                for url in &peer_listen_urls {
-                    let addr = url
-                        .strip_prefix("http://")
-                        .or_else(|| url.strip_prefix("https://"))
-                        .unwrap_or(url);
-                    let bind_uri: gm_quic::qbase::net::addr::BindUri = format!("inet://{addr}")
-                        .parse()
-                        .unwrap_or_else(|e| panic!("invalid peer listen url {addr}: {e}"));
-                    listeners
-                        .add_server(
-                            &self_name,
-                            cert_der.as_slice(),
-                            key_der.as_slice(),
-                            vec![bind_uri],
-                            None::<Vec<u8>>,
-                        )
-                        .unwrap_or_else(|e| panic!("add_server failed: {e}"));
+                for (addr, bind_uri) in &bind_uris {
+                    if let Err(e) = listeners.add_server(
+                        &self_name,
+                        cert_der.as_slice(),
+                        key_der.as_slice(),
+                        vec![bind_uri.clone()],
+                        None::<Vec<u8>>,
+                    ) {
+                        tracing::error!("Failed to add QUIC server on {addr}: {e}");
+                        return;
+                    }
                 }
 
-                if let Err(e) = quic_server.serve(listeners).await {
-                    tracing::error!("QUIC server error: {e:?}");
+                // Use tokio::select! to respect shutdown signal
+                tokio::select! {
+                    result = quic_server.serve(listeners.clone()) => {
+                        if let Err(e) = result {
+                            tracing::error!("QUIC server error: {e:?}");
+                        }
+                    }
+                    _ = n.wait() => {
+                        tracing::info!("QUIC server shutting down");
+                        listeners.shutdown();
+                    }
                 }
             });
 

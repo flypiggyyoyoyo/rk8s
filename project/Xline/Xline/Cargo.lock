@@ -4827,6 +4827,7 @@ dependencies = [
  "prost",
  "rand 0.8.5",
  "rustls",
+ "rustls-pemfile",
  "test-macros",
  "thiserror 1.0.69",
  "tokio",

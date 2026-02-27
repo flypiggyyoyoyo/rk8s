@@ -53,6 +53,7 @@ fn curp_error_to_tonic_status(err: CurpError) -> Status {
 }
 
 /// Auth wrapper
+#[derive(Clone)]
 pub(crate) struct AuthWrapper {
     /// Curp server
     curp_server: CurpServer,

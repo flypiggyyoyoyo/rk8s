@@ -236,9 +236,14 @@ pub struct Client {
 impl Client {
     /// New `Client`
     ///
+    /// Connects to the cluster by first performing a `FetchCluster` RPC via tonic
+    /// to discover peer URLs, then building a QUIC-based curp client for peer
+    /// communication. This means the cluster must be reachable at construction time;
+    /// a transient network failure will cause `connect()` to return an error.
+    ///
     /// # Errors
     ///
-    /// If `Self::build_channel` fails.
+    /// If `Self::build_channel` fails, or if the initial `FetchCluster` RPC fails.
     #[inline]
     #[allow(clippy::pattern_type_mismatch)] // allow mismatch in map
     #[allow(clippy::as_conversions)] // cast to dyn
@@ -276,16 +281,7 @@ impl Client {
         let cluster_version = resp.cluster_version;
 
         // Build QUIC client for curp peer communication
-        // TODO: integrate TLS configuration for xline-client QUIC
-        let quic_client = Arc::new(
-            gm_quic::prelude::QuicClient::builder()
-                .with_root_certificates(rustls::RootCertStore::empty())
-                .without_cert()
-                .build(),
-        );
-        tracing::warn!(
-            "xline-client QUIC using empty trust store; peer identity is not verified"
-        );
+        let quic_client = Arc::new(Self::build_quic_client(&options)?);
 
         // Use is_raw_curp=true so state refresh uses peer URLs (not client URLs)
         let mut builder = CurpClientBuilder::new(options.client_config, true)
@@ -342,6 +338,39 @@ impl Client {
             cluster,
             election,
         })
+    }
+
+    /// Build a QUIC client with optional peer CA certificate for identity verification.
+    fn build_quic_client(
+        options: &ClientOptions,
+    ) -> Result<gm_quic::prelude::QuicClient, XlineClientBuildError> {
+        let mut root_store = rustls::RootCertStore::empty();
+
+        if let Some(ca_pem) = &options.quic_peer_ca_cert {
+            let certs: Vec<_> = rustls_pemfile::certs(&mut ca_pem.as_slice())
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| {
+                    XlineClientBuildError::InvalidArguments(format!(
+                        "failed to parse QUIC peer CA cert: {e}"
+                    ))
+                })?;
+            for cert in certs {
+                root_store.add(cert).map_err(|e| {
+                    XlineClientBuildError::InvalidArguments(format!(
+                        "failed to add QUIC peer CA cert: {e}"
+                    ))
+                })?;
+            }
+        } else {
+            tracing::warn!(
+                "No QUIC peer CA certificate configured; peer identity is not verified"
+            );
+        }
+
+        Ok(gm_quic::prelude::QuicClient::builder()
+            .with_root_certificates(root_store)
+            .without_cert()
+            .build())
     }
 
     /// Build a tonic load balancing channel.
@@ -427,6 +456,10 @@ pub struct ClientOptions {
     tls_config: Option<ClientTlsConfig>,
     /// config for the curp client
     client_config: ClientConfig,
+    /// Peer CA certificate (PEM bytes) for QUIC peer identity verification.
+    /// When set, the QUIC client will verify the server's certificate against
+    /// this CA. When `None`, an empty trust store is used (no verification).
+    quic_peer_ca_cert: Option<Vec<u8>>,
 }
 
 impl ClientOptions {
@@ -442,6 +475,7 @@ impl ClientOptions {
             user,
             tls_config,
             client_config,
+            quic_peer_ca_cert: None,
         }
     }
 
@@ -492,6 +526,19 @@ impl ClientOptions {
     pub fn with_tls_config(self, tls_config: ClientTlsConfig) -> Self {
         Self {
             tls_config: Some(tls_config),
+            ..self
+        }
+    }
+
+    /// Set the peer CA certificate (PEM bytes) for QUIC peer identity verification.
+    ///
+    /// When set, the QUIC client will verify the server's certificate against
+    /// this CA during curp peer communication.
+    #[inline]
+    #[must_use]
+    pub fn with_quic_peer_ca_cert(self, ca_cert_pem: Vec<u8>) -> Self {
+        Self {
+            quic_peer_ca_cert: Some(ca_cert_pem),
             ..self
         }
     }
