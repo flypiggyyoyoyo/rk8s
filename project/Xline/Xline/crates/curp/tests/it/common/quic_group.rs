@@ -200,7 +200,8 @@ impl QuicCurpGroup {
                 vec![Box::<TestSpecPool>::default()],
                 vec![Box::<TestUncomPool>::default()],
                 Arc::clone(&quic_client),
-            );
+            )
+            .unwrap();
 
             servers.insert(server_names[i].clone(), QuicGrpcServer::new(rpc));
 

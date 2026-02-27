@@ -190,6 +190,28 @@ pub mod types;
 /// Error definitions for `xline-client`.
 pub mod error;
 
+/// Curp protocol client (tonic-generated ProtocolClient for FetchCluster RPC)
+#[allow(
+    clippy::all,
+    clippy::restriction,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::cargo,
+    unused_qualifications,
+    unreachable_pub,
+    variant_size_differences,
+    missing_copy_implementations,
+    missing_docs,
+    trivial_casts,
+    unused_results
+)]
+mod curp_proto {
+    /// Generated commandpb module containing `protocol_client::ProtocolClient`
+    pub(crate) mod commandpb {
+        include!(concat!(env!("OUT_DIR"), "/commandpb.rs"));
+    }
+}
+
 /// Xline client
 #[derive(Clone, Debug)]
 pub struct Client {
@@ -234,18 +256,48 @@ impl Client {
             .map(|addr| addr.as_ref().to_owned())
             .collect();
         let channel = Self::build_channel(addrs.clone(), options.tls_config.as_ref()).await?;
-        let curp_client = Arc::new(
-            CurpClientBuilder::new(options.client_config, false)
-                .quic_transport(Arc::new(
-                    gm_quic::prelude::QuicClient::builder()
-                        .with_root_certificates(rustls::RootCertStore::empty())
-                        .without_cert()
-                        .build(),
-                ))
-                .discover_from(addrs)
-                .await?
-                .build::<Command>()?,
-        ) as Arc<CurpClient>;
+
+        // Use tonic FetchCluster to get peer URLs from the client-facing endpoint
+        let mut protocol_client =
+            curp_proto::commandpb::protocol_client::ProtocolClient::new(channel.clone());
+        let resp = protocol_client
+            .fetch_cluster(curp::rpc::FetchClusterRequest { linearizable: false })
+            .await
+            .map_err(|e| XlineClientBuildError::RpcError(e.to_string()))?
+            .into_inner();
+
+        // Extract peer URLs for QUIC curp communication
+        let peer_urls: std::collections::HashMap<u64, Vec<String>> = resp
+            .members
+            .iter()
+            .map(|m| (m.id, m.peer_urls.clone()))
+            .collect();
+        let leader_state = resp.leader_id.as_ref().map(|id| (u64::from(id), resp.term));
+        let cluster_version = resp.cluster_version;
+
+        // Build QUIC client for curp peer communication
+        // TODO: integrate TLS configuration for xline-client QUIC
+        let quic_client = Arc::new(
+            gm_quic::prelude::QuicClient::builder()
+                .with_root_certificates(rustls::RootCertStore::empty())
+                .without_cert()
+                .build(),
+        );
+        tracing::warn!(
+            "xline-client QUIC using empty trust store; peer identity is not verified"
+        );
+
+        // Use is_raw_curp=true so state refresh uses peer URLs (not client URLs)
+        let mut builder = CurpClientBuilder::new(options.client_config, true)
+            .quic_transport(quic_client)
+            .cluster_version(cluster_version)
+            .all_members(peer_urls);
+
+        if let Some((leader_id, term)) = leader_state {
+            builder = builder.leader_state(leader_id, term);
+        }
+
+        let curp_client = Arc::new(builder.build::<Command>()?) as Arc<CurpClient>;
         let id_gen = Arc::new(lease_gen::LeaseIdGenerator::new());
 
         let token = match options.user {

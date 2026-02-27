@@ -239,7 +239,8 @@ impl CurpGroup {
                 vec![Box::<TestSpecPool>::default()],
                 vec![Box::<TestUncomPool>::default()],
                 Arc::clone(&quic_client),
-            );
+            )
+            .unwrap();
 
             server_map.insert(server_names[idx].clone(), QuicGrpcServer::new(rpc));
 
@@ -359,7 +360,8 @@ impl CurpGroup {
             vec![],
             vec![],
             Arc::clone(&self.quic_client),
-        );
+        )
+        .unwrap();
 
         // Extract server_name from addr (the hostname part before ':')
         let server_name = addr.split(':').next().unwrap_or(&addr).to_owned();

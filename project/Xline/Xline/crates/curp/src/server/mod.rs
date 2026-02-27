@@ -82,7 +82,7 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
         sps: Vec<SpObject<C>>,
         ucps: Vec<UcpObject<C>>,
         quic_client: Arc<gm_quic::prelude::QuicClient>,
-    ) -> Self {
+    ) -> Result<Self, crate::rpc::CurpError> {
         Self::new_inner(
             cluster_info,
             is_leader,
@@ -117,7 +117,7 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
         sps: Vec<SpObject<C>>,
         ucps: Vec<UcpObject<C>>,
         quic_client: Arc<gm_quic::prelude::QuicClient>,
-    ) -> Self {
+    ) -> Result<Self, crate::rpc::CurpError> {
         Self::new_inner(
             cluster_info,
             is_leader,
@@ -149,9 +149,8 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
         sps: Vec<SpObject<C>>,
         ucps: Vec<UcpObject<C>>,
         transport: crate::rpc::TransportConfig,
-    ) -> Self {
-        #[allow(clippy::panic)]
-        let curp_node = match CurpNode::new_with_transport(
+    ) -> Result<Self, crate::rpc::CurpError> {
+        let curp_node = CurpNode::new_with_transport(
             cluster_info,
             is_leader,
             executor,
@@ -163,16 +162,11 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> Rpc<C, CE, RC> {
             sps,
             ucps,
             transport,
-        ) {
-            Ok(n) => n,
-            Err(err) => {
-                panic!("failed to create curp service, {err:?}");
-            }
-        };
+        )?;
 
-        Self {
+        Ok(Self {
             inner: Arc::new(curp_node),
-        }
+        })
     }
 
     /// Get a subscriber for leader changes

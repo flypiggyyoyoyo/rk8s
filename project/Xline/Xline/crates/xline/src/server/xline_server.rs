@@ -86,6 +86,10 @@ pub struct XlineServer {
     server_tls_config: Option<ServerTlsConfig>,
     /// QUIC client for curp peer communication
     quic_client: Arc<gm_quic::prelude::QuicClient>,
+    /// Peer TLS certificate (DER) for QUIC server, None = self-signed fallback
+    peer_cert_der: Option<Vec<u8>>,
+    /// Peer TLS private key (DER) for QUIC server
+    peer_key_der: Option<Vec<u8>>,
     /// Task Manager
     task_manager: Arc<TaskManager>,
     /// Curp storage
@@ -122,14 +126,11 @@ impl XlineServer {
         let (client_tls_config, server_tls_config) = Self::read_tls_config(&tls_config).await?;
         let curp_storage = Arc::new(CurpDB::open(&cluster_config.curp_config().engine_cfg)?);
 
-        // Build QUIC client for curp peer communication
-        // TODO: configure TLS root certs from tls_config when QUIC TLS is fully integrated
-        let quic_client = Arc::new(
-            gm_quic::prelude::QuicClient::builder()
-                .with_root_certificates(rustls::RootCertStore::empty())
-                .without_cert()
-                .build(),
-        );
+        // Read peer TLS certs for QUIC server (DER format)
+        let (peer_cert_der, peer_key_der) = Self::read_peer_tls_der(&tls_config).await?;
+
+        // Build QUIC client for curp peer communication with proper TLS
+        let quic_client = Arc::new(Self::build_quic_client(&tls_config).await?);
         let transport = TransportConfig {
             client: Arc::clone(&quic_client),
             dns_fallback: curp::rpc::DnsFallback::Disabled,
@@ -152,6 +153,8 @@ impl XlineServer {
             client_tls_config,
             server_tls_config,
             quic_client,
+            peer_cert_der,
+            peer_key_der,
             task_manager: Arc::new(TaskManager::new()),
             curp_storage,
         })
@@ -382,20 +385,47 @@ impl XlineServer {
         // Start QUIC server for curp peer communication
         let peer_listen_urls = self.cluster_config.peer_listen_urls().clone();
         let self_name = self.cluster_info.self_name();
+        let peer_cert_der = self.peer_cert_der.clone();
+        let peer_key_der = self.peer_key_der.clone();
         self.task_manager
             .spawn(TaskName::CurpServer, |_n| async move {
                 // Build QUIC listeners
-                // TODO: integrate with server_tls_config for production TLS
                 let listeners = gm_quic::prelude::QuicListeners::builder()
                     .expect("QuicListeners::builder")
                     .without_client_cert_verifier()
                     .listen(64);
 
-                // Generate a self-signed cert for this node
-                let key = rcgen::KeyPair::generate().expect("generate key");
-                let params = rcgen::CertificateParams::new(vec![self_name.clone()])
-                    .expect("cert params");
-                let cert = params.self_signed(&key).expect("self-sign cert");
+                // Use configured certs or fall back to self-signed
+                let (cert_der, key_der) = match (peer_cert_der, peer_key_der) {
+                    (Some(cert), Some(key)) => (cert, key),
+                    _ => {
+                        tracing::warn!(
+                            "No peer TLS certificate configured; using ephemeral self-signed cert for QUIC server"
+                        );
+                        let key = rcgen::KeyPair::generate().expect("generate key");
+                        // Use hostnames/IPs from peer_listen_urls as SANs
+                        let sans: Vec<String> = peer_listen_urls
+                            .iter()
+                            .filter_map(|url| {
+                                url.strip_prefix("http://")
+                                    .or_else(|| url.strip_prefix("https://"))
+                                    .unwrap_or(url)
+                                    .split(':')
+                                    .next()
+                                    .map(String::from)
+                            })
+                            .collect();
+                        let sans = if sans.is_empty() {
+                            vec![self_name.clone()]
+                        } else {
+                            sans
+                        };
+                        let params =
+                            rcgen::CertificateParams::new(sans).expect("cert params");
+                        let cert = params.self_signed(&key).expect("self-sign cert");
+                        (cert.der().to_vec(), key.serialize_der())
+                    }
+                };
 
                 for url in &peer_listen_urls {
                     let addr = url
@@ -408,8 +438,8 @@ impl XlineServer {
                     listeners
                         .add_server(
                             &self_name,
-                            cert.der().as_ref(),
-                            key.serialize_der().as_slice(),
+                            cert_der.as_slice(),
+                            key_der.as_slice(),
                             vec![bind_uri],
                             None::<Vec<u8>>,
                         )
@@ -550,7 +580,8 @@ impl XlineServer {
             XlineSpeculativePools::new(Arc::clone(&lease_collection)).into_inner(),
             XlineUncommittedPools::new(lease_collection).into_inner(),
             Arc::clone(&self.quic_client),
-        );
+        )
+        .map_err(|e| anyhow::anyhow!("failed to create curp service: {e:?}"))?;
 
         let client = Arc::new(
             CurpClientBuilder::new(*self.cluster_config.client_config(), false)
@@ -713,6 +744,66 @@ impl XlineServer {
             _ => None,
         };
         Ok((client_tls_config, server_tls_config))
+    }
+
+    /// Build a QUIC client with proper TLS configuration from `TlsConfig`.
+    ///
+    /// If `peer_ca_cert_path` is configured, the CA cert is loaded into the root
+    /// store so the client verifies server identity. If `peer_cert_path` and
+    /// `peer_key_path` are also set, mTLS client authentication is enabled.
+    /// Without any peer TLS config, the client uses an empty trust store (no
+    /// verification) and logs a warning.
+    async fn build_quic_client(tls_config: &TlsConfig) -> Result<gm_quic::prelude::QuicClient> {
+        let mut root_store = rustls::RootCertStore::empty();
+
+        if let Some(ca_path) = tls_config.peer_ca_cert_path() {
+            let ca_pem = fs::read(ca_path).await?;
+            let certs: Vec<_> = rustls_pemfile::certs(&mut &ca_pem[..])
+                .collect::<Result<Vec<_>, _>>()?;
+            for cert in certs {
+                root_store
+                    .add(cert)
+                    .map_err(|e| anyhow!("failed to add peer CA cert: {e}"))?;
+            }
+        } else {
+            warn!(
+                "No peer CA certificate configured; QUIC peer connections will not verify server identity"
+            );
+        }
+
+        let builder = gm_quic::prelude::QuicClient::builder()
+            .with_root_certificates(root_store);
+
+        let client = match (tls_config.peer_cert_path(), tls_config.peer_key_path()) {
+            (Some(cert_path), Some(key_path)) => {
+                // gm-quic's with_cert accepts &Path directly (handles PEM/DER parsing)
+                builder
+                    .with_cert(cert_path.as_path(), key_path.as_path())
+                    .build()
+            }
+            _ => builder.without_cert().build(),
+        };
+
+        Ok(client)
+    }
+
+    /// Read peer TLS certificate and private key files as raw bytes for the
+    /// QUIC server. Returns `(None, None)` if not configured. The raw bytes
+    /// (PEM or DER) are passed directly to gm-quic which handles parsing.
+    async fn read_peer_tls_der(
+        tls_config: &TlsConfig,
+    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>)> {
+        match (tls_config.peer_cert_path(), tls_config.peer_key_path()) {
+            (Some(cert_path), Some(key_path)) => {
+                let cert_bytes = fs::read(cert_path).await?;
+                let key_bytes = fs::read(key_path).await?;
+                Ok((Some(cert_bytes), Some(key_bytes)))
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                Err(anyhow!("peer_cert_path and peer_key_path must be both set"))
+            }
+            _ => Ok((None, None)),
+        }
     }
 }
 
