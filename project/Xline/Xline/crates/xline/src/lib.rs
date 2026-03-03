@@ -172,32 +172,13 @@ mod revision_number;
 mod rpc {
     pub(crate) use xlineapi::*;
 }
-/// Curp protocol service (tonic-generated Protocol trait + ProtocolServer)
-///
-/// Generated from curp's proto with extern_path mapping so that message types
-/// resolve to `curp::rpc::*`. Only the service trait and server are used here
-/// (for the client-facing gRPC endpoint via AuthWrapper).
-#[allow(
-    clippy::all,
-    clippy::restriction,
-    clippy::pedantic,
-    clippy::nursery,
-    clippy::cargo,
-    unused_qualifications,
-    unreachable_pub,
-    variant_size_differences,
-    missing_copy_implementations,
-    missing_docs,
-    trivial_casts,
-    unused_results
-)]
-pub(crate) mod curp_proto {
-    pub(crate) mod commandpb {
-        include!(concat!(env!("OUT_DIR"), "/commandpb.rs"));
-    }
-}
 /// Command conflict implementation
 mod conflict;
+/// Curp protocol service (Protocol trait + ProtocolServer).
+///
+/// Extracted from tonic_build codegen output. Message types resolve to
+/// `curp::rpc::*` via extern_path mapping. No build-time codegen required.
+pub(crate) mod curp_proto;
 /// Xline metrics
 pub mod metrics;
 /// restore module, only for test

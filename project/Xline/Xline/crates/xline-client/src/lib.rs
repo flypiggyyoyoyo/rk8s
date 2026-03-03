@@ -190,26 +190,23 @@ pub mod types;
 /// Error definitions for `xline-client`.
 pub mod error;
 
-/// Curp protocol client (tonic-generated ProtocolClient for FetchCluster RPC)
-#[allow(
-    clippy::all,
-    clippy::restriction,
-    clippy::pedantic,
-    clippy::nursery,
-    clippy::cargo,
-    unused_qualifications,
-    unreachable_pub,
-    variant_size_differences,
-    missing_copy_implementations,
-    missing_docs,
-    trivial_casts,
-    unused_results
-)]
-mod curp_proto {
-    /// Generated commandpb module containing `protocol_client::ProtocolClient`
-    pub(crate) mod commandpb {
-        include!(concat!(env!("OUT_DIR"), "/commandpb.rs"));
-    }
+/// Perform a FetchCluster unary RPC via tonic's low-level Grpc client.
+///
+/// Replaces the tonic_build-generated `ProtocolClient`. Uses the same gRPC path
+/// and `ProstCodec` so it is wire-compatible with the server's `ProtocolServer`.
+async fn fetch_cluster_from_channel(
+    channel: Channel,
+    req: curp::rpc::FetchClusterRequest,
+) -> Result<curp::rpc::FetchClusterResponse, tonic::Status> {
+    let mut grpc = tonic::client::Grpc::new(channel);
+    grpc.ready()
+        .await
+        .map_err(|e| tonic::Status::unavailable(format!("channel not ready: {e}")))?;
+    let path = http::uri::PathAndQuery::from_static("/commandpb.Protocol/FetchCluster");
+    let codec = tonic::codec::ProstCodec::default();
+    grpc.unary(tonic::Request::new(req), path, codec)
+        .await
+        .map(tonic::Response::into_inner)
 }
 
 /// Xline client
@@ -263,13 +260,14 @@ impl Client {
         let channel = Self::build_channel(addrs.clone(), options.tls_config.as_ref()).await?;
 
         // Use tonic FetchCluster to get peer URLs from the client-facing endpoint
-        let mut protocol_client =
-            curp_proto::commandpb::protocol_client::ProtocolClient::new(channel.clone());
-        let resp = protocol_client
-            .fetch_cluster(curp::rpc::FetchClusterRequest { linearizable: false })
-            .await
-            .map_err(|e| XlineClientBuildError::RpcError(e.to_string()))?
-            .into_inner();
+        let resp = fetch_cluster_from_channel(
+            channel.clone(),
+            curp::rpc::FetchClusterRequest {
+                linearizable: false,
+            },
+        )
+        .await
+        .map_err(|e| XlineClientBuildError::RpcError(e.to_string()))?;
 
         // Extract peer URLs for QUIC curp communication
         let peer_urls: std::collections::HashMap<u64, Vec<String>> = resp
@@ -362,9 +360,7 @@ impl Client {
                 })?;
             }
         } else {
-            tracing::warn!(
-                "No QUIC peer CA certificate configured; peer identity is not verified"
-            );
+            tracing::warn!("No QUIC peer CA certificate configured; peer identity is not verified");
         }
 
         Ok(gm_quic::prelude::QuicClient::builder()

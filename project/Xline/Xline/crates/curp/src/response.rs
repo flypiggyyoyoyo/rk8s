@@ -1,8 +1,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::rpc::{OpResponse, ProposeResponse, ResponseOp, SyncedResponse};
 use curp_external_api::cmd::Command;
 use xlinerpc::status::Status;
-use crate::rpc::{OpResponse, ProposeResponse, ResponseOp, SyncedResponse};
 
 /// The response sender
 #[derive(Debug)]

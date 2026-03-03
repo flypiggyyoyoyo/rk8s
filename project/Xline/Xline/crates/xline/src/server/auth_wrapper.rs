@@ -1,18 +1,17 @@
 use std::{pin::Pin, sync::Arc};
 
+use crate::curp_proto::commandpb::protocol_server::Protocol;
 use async_trait::async_trait;
 use curp::{
     cmd::PbCodec,
     rpc::{
-        CurpError, CurpService, FetchClusterRequest, FetchClusterResponse,
-        FetchReadStateRequest, FetchReadStateResponse, LeaseKeepAliveMsg, Metadata,
-        MoveLeaderRequest, MoveLeaderResponse, OpResponse, ProposeConfChangeRequest,
-        ProposeConfChangeResponse, ProposeRequest, PublishRequest, PublishResponse,
-        ReadIndexRequest, ReadIndexResponse, RecordRequest, RecordResponse, ShutdownRequest,
-        ShutdownResponse,
+        CurpError, CurpService, FetchClusterRequest, FetchClusterResponse, FetchReadStateRequest,
+        FetchReadStateResponse, LeaseKeepAliveMsg, Metadata, MoveLeaderRequest, MoveLeaderResponse,
+        OpResponse, ProposeConfChangeRequest, ProposeConfChangeResponse, ProposeRequest,
+        PublishRequest, PublishResponse, ReadIndexRequest, ReadIndexResponse, RecordRequest,
+        RecordResponse, ShutdownRequest, ShutdownResponse,
     },
 };
-use crate::curp_proto::commandpb::protocol_server::Protocol;
 use futures::{Stream, StreamExt};
 use tonic::Status;
 use tracing::debug;
@@ -83,9 +82,7 @@ impl AuthWrapper {
             .try_get_auth_info_from_token(token)
             .map_err(CurpError::from)?
         {
-            let mut command: Command = req
-                .cmd()
-                .map_err(CurpError::from)?;
+            let mut command: Command = req.cmd().map_err(CurpError::from)?;
             command.set_auth_info(auth_info);
             req.command = command.encode();
         }
@@ -105,10 +102,7 @@ impl CurpService for AuthWrapper {
         meta: Metadata,
     ) -> Result<Box<dyn Stream<Item = Result<OpResponse, CurpError>> + Send + Unpin>, CurpError>
     {
-        debug!(
-            "AuthWrapper received propose request: {}",
-            req.propose_id()
-        );
+        debug!("AuthWrapper received propose request: {}", req.propose_id());
         self.inject_auth_from_token(&mut req, meta.token())?;
         CurpService::propose_stream(&self.curp_server, req, meta).await
     }
@@ -141,10 +135,7 @@ impl CurpService for AuthWrapper {
         CurpService::publish(&self.curp_server, req, meta)
     }
 
-    fn fetch_cluster(
-        &self,
-        req: FetchClusterRequest,
-    ) -> Result<FetchClusterResponse, CurpError> {
+    fn fetch_cluster(&self, req: FetchClusterRequest) -> Result<FetchClusterResponse, CurpError> {
         CurpService::fetch_cluster(&self.curp_server, req)
     }
 
@@ -155,10 +146,7 @@ impl CurpService for AuthWrapper {
         CurpService::fetch_read_state(&self.curp_server, req)
     }
 
-    async fn move_leader(
-        &self,
-        req: MoveLeaderRequest,
-    ) -> Result<MoveLeaderResponse, CurpError> {
+    async fn move_leader(&self, req: MoveLeaderRequest) -> Result<MoveLeaderResponse, CurpError> {
         CurpService::move_leader(&self.curp_server, req).await
     }
 
@@ -180,8 +168,7 @@ impl CurpService for AuthWrapper {
 
 #[tonic::async_trait]
 impl Protocol for AuthWrapper {
-    type ProposeStreamStream =
-        Pin<Box<dyn Stream<Item = Result<OpResponse, Status>> + Send>>;
+    type ProposeStreamStream = Pin<Box<dyn Stream<Item = Result<OpResponse, Status>> + Send>>;
 
     async fn propose_stream(
         &self,
@@ -212,7 +199,8 @@ impl Protocol for AuthWrapper {
     ) -> Result<tonic::Response<RecordResponse>, Status> {
         let meta = metadata_from_tonic(request.metadata());
         Ok(tonic::Response::new(
-            CurpService::record(self, request.into_inner(), meta).map_err(curp_error_to_tonic_status)?,
+            CurpService::record(self, request.into_inner(), meta)
+                .map_err(curp_error_to_tonic_status)?,
         ))
     }
 
@@ -256,7 +244,8 @@ impl Protocol for AuthWrapper {
     ) -> Result<tonic::Response<PublishResponse>, Status> {
         let meta = metadata_from_tonic(request.metadata());
         Ok(tonic::Response::new(
-            CurpService::publish(self, request.into_inner(), meta).map_err(curp_error_to_tonic_status)?,
+            CurpService::publish(self, request.into_inner(), meta)
+                .map_err(curp_error_to_tonic_status)?,
         ))
     }
 
@@ -265,7 +254,8 @@ impl Protocol for AuthWrapper {
         request: tonic::Request<FetchClusterRequest>,
     ) -> Result<tonic::Response<FetchClusterResponse>, Status> {
         Ok(tonic::Response::new(
-            CurpService::fetch_cluster(self, request.into_inner()).map_err(curp_error_to_tonic_status)?,
+            CurpService::fetch_cluster(self, request.into_inner())
+                .map_err(curp_error_to_tonic_status)?,
         ))
     }
 
@@ -274,7 +264,8 @@ impl Protocol for AuthWrapper {
         request: tonic::Request<FetchReadStateRequest>,
     ) -> Result<tonic::Response<FetchReadStateResponse>, Status> {
         Ok(tonic::Response::new(
-            CurpService::fetch_read_state(self, request.into_inner()).map_err(curp_error_to_tonic_status)?,
+            CurpService::fetch_read_state(self, request.into_inner())
+                .map_err(curp_error_to_tonic_status)?,
         ))
     }
 

@@ -28,9 +28,9 @@ use curp_external_api::cmd::Command;
 use futures::{StreamExt, stream::FuturesUnordered};
 use parking_lot::RwLock;
 use tokio::task::JoinHandle;
-use xlinerpc::status::Status;
 use tracing::debug;
 use utils::config::ClientConfig;
+use xlinerpc::status::Status;
 
 use self::{
     retry::{Retry, RetryConfig},

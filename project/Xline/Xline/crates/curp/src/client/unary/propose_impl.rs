@@ -3,6 +3,7 @@ use std::pin::Pin;
 use curp_external_api::cmd::Command;
 use futures::{FutureExt, Stream, StreamExt, future, stream};
 
+use super::Unary;
 use crate::{
     client::ProposeResponse,
     members::ServerId,
@@ -10,7 +11,6 @@ use crate::{
     rpc::{CurpError, OpResponse, ProposeId, ProposeRequest, RecordRequest, ResponseOp},
     super_quorum,
 };
-use super::Unary;
 
 /// A stream of propose events
 type EventStream<'a, C> = Box<dyn Stream<Item = Result<ProposeEvent<C>, CurpError>> + Send + 'a>;

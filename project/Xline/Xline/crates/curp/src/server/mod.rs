@@ -1,8 +1,5 @@
 use std::{fmt::Debug, sync::Arc};
 
-use engine::SnapshotAllocator;
-use tokio::sync::broadcast;
-use utils::{config::CurpConfig, task_manager::TaskManager};
 use self::curp_node::CurpNode;
 pub use self::{
     conflict::{spec_pool_new::SpObject, uncommitted_pool::UcpObject},
@@ -13,6 +10,9 @@ use crate::{
     members::{ClusterInfo, ServerId},
     role_change::RoleChange,
 };
+use engine::SnapshotAllocator;
+use tokio::sync::broadcast;
+use utils::{config::CurpConfig, task_manager::TaskManager};
 
 /// Command worker to do execution and after sync
 mod cmd_worker;
@@ -302,8 +302,7 @@ mod quic_service_impl {
         ) -> Result<LeaseKeepAliveMsg, CurpError> {
             // CurpNode::lease_keep_alive is generic over E: Error + 'static.
             // xlinerpc::Status implements Error, so convert CurpError → xlinerpc::Status.
-            let status_stream =
-                stream.map(|r| r.map_err(xlinerpc::status::Status::from));
+            let status_stream = stream.map(|r| r.map_err(xlinerpc::status::Status::from));
             self.inner
                 .lease_keep_alive(status_stream)
                 .await
@@ -334,8 +333,7 @@ mod quic_service_impl {
         ) -> Result<InstallSnapshotResponse, CurpError> {
             // CurpNode::install_snapshot is generic over E: Error + 'static.
             // xlinerpc::Status implements Error, so convert CurpError → xlinerpc::Status.
-            let status_stream =
-                stream.map(|r| r.map_err(xlinerpc::status::Status::from));
+            let status_stream = stream.map(|r| r.map_err(xlinerpc::status::Status::from));
             self.inner
                 .install_snapshot(status_stream)
                 .await

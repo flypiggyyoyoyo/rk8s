@@ -21,18 +21,15 @@ use crate::{
     rpc::{
         AppendEntriesRequest, AppendEntriesResponse, CurpError, FetchClusterRequest,
         FetchClusterResponse, FetchReadStateRequest, FetchReadStateResponse,
-        InstallSnapshotRequest, InstallSnapshotResponse, MoveLeaderRequest,
-        MoveLeaderResponse, OpResponse, ProposeConfChangeRequest, ProposeConfChangeResponse,
-        ProposeRequest, PublishRequest, PublishResponse, ShutdownRequest, ShutdownResponse,
-        VoteRequest, VoteResponse,
+        InstallSnapshotRequest, InstallSnapshotResponse, MoveLeaderRequest, MoveLeaderResponse,
+        OpResponse, ProposeConfChangeRequest, ProposeConfChangeResponse, ProposeRequest,
+        PublishRequest, PublishResponse, ShutdownRequest, ShutdownResponse, VoteRequest,
+        VoteResponse,
     },
     snapshot::Snapshot,
 };
 
-use super::{
-    RecordRequest, RecordResponse,
-    proto::commandpb::ReadIndexResponse,
-};
+use super::{RecordRequest, RecordResponse, proto::commandpb::ReadIndexResponse};
 
 /// Install snapshot chunk size: 64KB
 const SNAPSHOT_CHUNK_SIZE: u64 = 64 * 1024;

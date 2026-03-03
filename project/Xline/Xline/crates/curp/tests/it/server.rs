@@ -2,6 +2,7 @@
 
 use std::{sync::Arc, time::Duration};
 
+use crate::common::curp_group::{CurpGroup, DEFAULT_SHUTDOWN_TIMEOUT};
 use clippy_utilities::NumericCast;
 use curp::{
     client::{ClientApi, ClientBuilder},
@@ -17,9 +18,8 @@ use rand::{Rng, thread_rng};
 use test_macros::abort_on_panic;
 use tokio::net::TcpListener;
 use tokio_stream::StreamExt;
-use xlinerpc::status::Code;
 use utils::{config::ClientConfig, timestamp};
-use crate::common::curp_group::{CurpGroup, DEFAULT_SHUTDOWN_TIMEOUT};
+use xlinerpc::status::Code;
 
 #[tokio::test(flavor = "multi_thread")]
 #[abort_on_panic]

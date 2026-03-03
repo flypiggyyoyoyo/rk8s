@@ -146,12 +146,7 @@ impl XlineServer {
         };
 
         let cluster_info = Arc::new(
-            Self::init_cluster_info(
-                &cluster_config,
-                curp_storage.as_ref(),
-                &transport,
-            )
-            .await?,
+            Self::init_cluster_info(&cluster_config, curp_storage.as_ref(), &transport).await?,
         );
         Ok(Self {
             cluster_info,
@@ -323,11 +318,15 @@ impl XlineServer {
     ///
     /// Will return `Err` when `init_servers` return an error
     #[inline]
-    pub async fn init_router(
+    pub(crate) async fn init_router(
         &self,
         db: Arc<DB>,
         key_pair: Option<(EncodingKey, DecodingKey)>,
-    ) -> Result<(Router, QuicGrpcServer<Command, CommandExecutor, State<Arc<CurpClient>>>, Arc<CurpClient>)> {
+    ) -> Result<(
+        Router,
+        QuicGrpcServer<Command, CommandExecutor, State<Arc<CurpClient>>>,
+        Arc<CurpClient>,
+    )> {
         let (
             kv_server,
             lock_server,
@@ -389,7 +388,9 @@ impl XlineServer {
         // Start tonic server for xline client-facing services
         self.task_manager
             .spawn(TaskName::CurpServer, |n1| async move {
-                let _ig = xline_router.serve_with_incoming_shutdown(xline_incoming, n1.wait()).await;
+                let _ig = xline_router
+                    .serve_with_incoming_shutdown(xline_incoming, n1.wait())
+                    .await;
             });
 
         // Start QUIC server for curp peer communication
@@ -425,8 +426,7 @@ impl XlineServer {
                 } else {
                     sans
                 };
-                let params =
-                    rcgen::CertificateParams::new(sans).expect("cert params");
+                let params = rcgen::CertificateParams::new(sans).expect("cert params");
                 let cert = params.self_signed(&key).expect("self-sign cert");
                 (cert.der().to_vec(), key.serialize_der())
             }
@@ -468,17 +468,16 @@ impl XlineServer {
                             return;
                         }
                     }
-                    let verifier = match rustls::server::WebPkiClientVerifier::builder(
-                        Arc::new(root_store),
-                    )
-                    .build()
-                    {
-                        Ok(v) => v,
-                        Err(e) => {
-                            tracing::error!("Failed to build client cert verifier: {e}");
-                            return;
-                        }
-                    };
+                    let verifier =
+                        match rustls::server::WebPkiClientVerifier::builder(Arc::new(root_store))
+                            .build()
+                        {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::error!("Failed to build client cert verifier: {e}");
+                                return;
+                            }
+                        };
                     gm_quic::prelude::QuicListeners::builder()
                         .expect("QuicListeners::builder")
                         .with_client_cert_verifier(verifier)
@@ -533,7 +532,10 @@ impl XlineServer {
         let client_listen_urls = self.cluster_config.client_listen_urls();
         let xline_incoming = bind_addrs(client_listen_urls)?;
         info!("start xline server on {:?}", client_listen_urls);
-        info!("start curp server (QUIC) on {:?}", self.cluster_config.peer_listen_urls());
+        info!(
+            "start curp server (QUIC) on {:?}",
+            self.cluster_config.peer_listen_urls()
+        );
         self.start_inner(xline_incoming).await
     }
 
@@ -824,8 +826,8 @@ impl XlineServer {
 
         if let Some(ca_path) = tls_config.peer_ca_cert_path() {
             let ca_pem = fs::read(ca_path).await?;
-            let certs: Vec<_> = rustls_pemfile::certs(&mut &ca_pem[..])
-                .collect::<Result<Vec<_>, _>>()?;
+            let certs: Vec<_> =
+                rustls_pemfile::certs(&mut &ca_pem[..]).collect::<Result<Vec<_>, _>>()?;
             for cert in certs {
                 root_store
                     .add(cert)
@@ -837,8 +839,7 @@ impl XlineServer {
             );
         }
 
-        let builder = gm_quic::prelude::QuicClient::builder()
-            .with_root_certificates(root_store);
+        let builder = gm_quic::prelude::QuicClient::builder().with_root_certificates(root_store);
 
         let client = match (tls_config.peer_cert_path(), tls_config.peer_key_path()) {
             (Some(cert_path), Some(key_path)) => {

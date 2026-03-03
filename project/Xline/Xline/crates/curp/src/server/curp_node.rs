@@ -685,16 +685,16 @@ impl<C: Command, CE: CommandExecutor<C>, RC: RoleChange> CurpNode<C, CE, RC> {
             };
             match change.change_type() {
                 ConfChangeType::Add | ConfChangeType::AddLearner => {
-                    let connect = InnerConnectApiWrapper::new_from_arc(
-                        Arc::new(rpc::connect::QuicInnerConnect::new(
+                    let connect = InnerConnectApiWrapper::new_from_arc(Arc::new(
+                        rpc::connect::QuicInnerConnect::new(
                             change.node_id,
                             Arc::new(rpc::quic_transport::channel::QuicChannel::with_addrs(
                                 Arc::clone(&curp.transport().client),
                                 change.address,
                                 curp.transport().dns_fallback,
                             )),
-                        )),
-                    );
+                        ),
+                    ));
                     curp.insert_connect(connect.clone());
                     let sync_event = curp.sync_event(change.node_id);
                     let remove_event = Arc::new(Event::new());

@@ -5,20 +5,20 @@ use std::{
     time::Duration,
 };
 
-use event_listener::Event;
-use futures::{Future, stream::FuturesUnordered};
-use rand::seq::IteratorRandom;
-use tokio::sync::RwLock;
-use xlinerpc::status::Status;
-use tracing::{debug, info};
 use crate::{
     members::ServerId,
     rpc::{
-        self, CurpError, FetchClusterRequest, FetchClusterResponse, CurpService,
+        self, CurpError, CurpService, FetchClusterRequest, FetchClusterResponse,
         connect::{BypassedConnect, ConnectApi},
         transport::TransportConfig,
     },
 };
+use event_listener::Event;
+use futures::{Future, stream::FuturesUnordered};
+use rand::seq::IteratorRandom;
+use tokio::sync::RwLock;
+use tracing::{debug, info};
+use xlinerpc::status::Status;
 
 /// The client state
 #[derive(Debug)]
@@ -77,8 +77,8 @@ impl State {
         term: u64,
         cluster_version: u64,
     ) -> Arc<Self> {
-        use gm_quic::prelude::QuicClient;
         use crate::rpc::quic_transport::channel::DnsFallback;
+        use gm_quic::prelude::QuicClient;
 
         let quic_client = Arc::new(
             QuicClient::builder()

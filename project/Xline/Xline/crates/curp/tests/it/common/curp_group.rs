@@ -1,6 +1,4 @@
-use std::{
-    collections::HashMap, path::PathBuf, sync::Arc, time::Duration,
-};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use curp::{
     LogIndex,
@@ -19,9 +17,7 @@ use curp_test_utils::{
     TestRoleChange, TestRoleChangeInner,
     test_cmd::{TestCE, TestCommand, TestCommandResult},
 };
-use engine::{
-    EngineType, MemorySnapshotAllocator, RocksSnapshotAllocator, SnapshotAllocator,
-};
+use engine::{EngineType, MemorySnapshotAllocator, RocksSnapshotAllocator, SnapshotAllocator};
 use futures::future::join_all;
 use gm_quic::prelude::{QuicClient, QuicListeners};
 use itertools::Itertools;
@@ -34,14 +30,12 @@ use tokio::{
     task::{JoinHandle, block_in_place},
     time::timeout,
 };
-use xlinerpc::status::Status;
 use tracing::debug;
 use utils::{
-    config::{
-        ClientConfig, CurpConfig, EngineConfig,
-    },
+    config::{ClientConfig, CurpConfig, EngineConfig},
     task_manager::{TaskManager, tasks::TaskName},
 };
+use xlinerpc::status::Status;
 
 /// `BOTTOM_TASKS` are tasks which not dependent on other tasks in the task group.
 const BOTTOM_TASKS: [TaskName; 2] = [TaskName::WatchTask, TaskName::ConfChange];
@@ -562,17 +556,17 @@ impl CurpGroup {
     pub async fn fetch_cluster_info(&self, addrs: &[String], name: &str) -> ClusterInfo {
         let leader_id = self.get_leader().await.0;
         let node = &self.nodes[&leader_id];
-        let channel = QuicChannel::connect_single_for_test(
-            &node.addr,
-            Arc::clone(&self.quic_client),
-        )
-        .await
-        .expect("connect to leader");
+        let channel =
+            QuicChannel::connect_single_for_test(&node.addr, Arc::clone(&self.quic_client))
+                .await
+                .expect("connect to leader");
 
         let cluster_res: FetchClusterResponse = channel
             .unary_call(
                 MethodId::FetchCluster,
-                FetchClusterRequest { linearizable: false },
+                FetchClusterRequest {
+                    linearizable: false,
+                },
                 vec![],
                 Duration::from_secs(5),
             )
@@ -584,22 +578,19 @@ impl CurpGroup {
     }
 
     /// Fetch cluster from a specific node via QUIC
-    pub async fn fetch_cluster_from_node(
-        &self,
-        node_id: &ServerId,
-    ) -> FetchClusterResponse {
+    pub async fn fetch_cluster_from_node(&self, node_id: &ServerId) -> FetchClusterResponse {
         let node = &self.nodes[node_id];
-        let channel = QuicChannel::connect_single_for_test(
-            &node.addr,
-            Arc::clone(&self.quic_client),
-        )
-        .await
-        .expect("connect to node");
+        let channel =
+            QuicChannel::connect_single_for_test(&node.addr, Arc::clone(&self.quic_client))
+                .await
+                .expect("connect to node");
 
         channel
             .unary_call(
                 MethodId::FetchCluster,
-                FetchClusterRequest { linearizable: false },
+                FetchClusterRequest {
+                    linearizable: false,
+                },
                 vec![],
                 Duration::from_secs(5),
             )

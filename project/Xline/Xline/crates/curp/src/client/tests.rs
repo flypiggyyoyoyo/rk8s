@@ -4,10 +4,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use curp_test_utils::test_cmd::{LogIndexResult, TestCommand, TestCommandResult};
-use futures::{Stream, future::BoxFuture};
-use xlinerpc::status::Status;
-use tracing_test::traced_test;
 use super::{
     state::State,
     stream::{Streaming, StreamingConfig},
@@ -28,6 +24,10 @@ use crate::{
         connect::{ConnectApi, MockConnectApi},
     },
 };
+use curp_test_utils::test_cmd::{LogIndexResult, TestCommand, TestCommandResult};
+use futures::{Stream, future::BoxFuture};
+use tracing_test::traced_test;
+use xlinerpc::status::Status;
 
 /// Create a mocked connects with server id from 0~size
 #[allow(trivial_casts)] // Trait object with high ranked type inferences failed, cast manually
@@ -55,13 +55,7 @@ fn init_unary_client(
     term: u64,
     cluster_version: u64,
 ) -> Unary<TestCommand> {
-    let state = State::new_arc(
-        connects,
-        local_server,
-        leader,
-        term,
-        cluster_version,
-    );
+    let state = State::new_arc(connects, local_server, leader, term, cluster_version);
     Unary::new(
         state,
         UnaryConfig::new(Duration::from_secs(0), Duration::from_secs(0)),

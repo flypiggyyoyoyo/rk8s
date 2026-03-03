@@ -37,8 +37,5 @@ rand = "0.8.5"
 test-macros = { path = "../test-macros" }
 xline-test-utils = { path = "../xline-test-utils" }
 
-[build-dependencies]
-tonic-build = { workspace = true }
-
 [lints]
 workspace = true
