@@ -201,7 +201,7 @@ async fn fetch_cluster_from_channel(
     let mut grpc = tonic::client::Grpc::new(channel);
     grpc.ready()
         .await
-        .map_err(|e| tonic::Status::unavailable(format!("channel not ready: {e}")))?;
+        .map_err(|e| tonic::Status::unknown(format!("Service was not ready: {e}")))?;
     let path = http::uri::PathAndQuery::from_static("/commandpb.Protocol/FetchCluster");
     let codec = tonic::codec::ProstCodec::default();
     grpc.unary(tonic::Request::new(req), path, codec)
